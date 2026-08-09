@@ -1,0 +1,19 @@
+# OS & Environment Files
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.env.*.local
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+# Dependency and Build directories (handled locally or at subfolders)
+node_modules/
+dist/
+build/
+.next/
