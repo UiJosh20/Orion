@@ -3,6 +3,7 @@ import { ENV } from "../../config/env.js";
 import axios from "axios";
 import WebSocket from "ws";
 import { redisClient } from "../../config/redis.js";
+import { NewsService } from "../news/news.service.js";
 
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const BINANCE_URL = "https://api.binance.com/api/v3";
@@ -151,7 +152,11 @@ export class CryptoWsService {
   private static subscribers: Map<string, (candle: any) => void> = new Map();
   private static reconnectTimeout: NodeJS.Timeout | null = null;
 
-  public static subscribeToKline(symbol: string, interval: string, callback: (candle: any) => void) {
+  public static subscribeToKline(
+    symbol: string,
+    interval: string,
+    callback: (candle: any) => void,
+  ) {
     const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
     this.subscribers.set(streamName, callback);
 
@@ -166,7 +171,7 @@ export class CryptoWsService {
     } else {
       // Send dynamic subscription frame to existing master socket
       const subPayload = JSON.stringify({
-        method: 'SUBSCRIBE',
+        method: "SUBSCRIBE",
         params: [streamName],
         id: Date.now(),
       });
@@ -178,17 +183,17 @@ export class CryptoWsService {
   private static connectMasterSocket() {
     if (this.activeStreams.size === 0) return;
 
-    const streamsParam = Array.from(this.activeStreams).join('/');
+    const streamsParam = Array.from(this.activeStreams).join("/");
     const url = `wss://stream.binance.com:9443/stream?streams=${streamsParam}`;
 
     console.log(`[Crypto WS]: Connecting to master multi-stream socket...`);
     this.ws = new WebSocket(url);
 
-    this.ws.on('open', () => {
+    this.ws.on("open", () => {
       console.log(`[Crypto WS]: Master connection established successfully.`);
     });
 
-    this.ws.on('message', (data: WebSocket.Data) => {
+    this.ws.on("message", (data: WebSocket.Data) => {
       try {
         const parsed = JSON.parse(data.toString());
         // Combined stream structure: { stream: 'btcusdt@kline_1h', data: { ... } }
@@ -210,17 +215,19 @@ export class CryptoWsService {
           }
         }
       } catch (err) {
-        console.error('[Crypto WS Message Error]:', err);
+        console.error("[Crypto WS Message Error]:", err);
       }
     });
 
-    this.ws.on('close', () => {
-      console.warn('[Crypto WS]: Master connection closed. Reconnecting in 5s...');
+    this.ws.on("close", () => {
+      console.warn(
+        "[Crypto WS]: Master connection closed. Reconnecting in 5s...",
+      );
       this.scheduleReconnect();
     });
 
-    this.ws.on('error', (err) => {
-      console.error('[Crypto WS Error]:', err);
+    this.ws.on("error", (err) => {
+      console.error("[Crypto WS Error]:", err);
       this.ws?.terminate();
     });
   }
@@ -328,10 +335,16 @@ export class MarketOrchestrator {
       try {
         const parsed = JSON.parse(cachedData);
         // Ensure the cached object actually has a valid candles array
-        if (parsed && Array.isArray(parsed.candles) && parsed.candles.length > 0) {
+        if (
+          parsed &&
+          Array.isArray(parsed.candles) &&
+          parsed.candles.length > 0
+        ) {
           return parsed;
         } else {
-          console.warn(`[Market Orchestrator]: Malformed cache found for ${cleanRedisKey}. Purging...`);
+          console.warn(
+            `[Market Orchestrator]: Malformed cache found for ${cleanRedisKey}. Purging...`,
+          );
           await redisClient.del(cleanRedisKey);
         }
       } catch (err) {
@@ -341,11 +354,12 @@ export class MarketOrchestrator {
     }
 
     // 2. If not cached or purged, fetch it immediately via REST
-    const candles = await MarketService.getCandles(
-      formattedSymbol,
-      interval,
-      50,
-    );
+    const [candles, headlines] = await Promise.all([
+      MarketService.getCandles(formattedSymbol, interval, 50),
+      NewsService.fetchNews(formattedSymbol),
+    ]);
+
+
     if (!candles || !Array.isArray(candles) || candles.length === 0) {
       throw new Error(
         `Failed to retrieve valid candle data for ${formattedSymbol}`,
@@ -363,6 +377,7 @@ export class MarketOrchestrator {
           : "crypto",
       latestPrice: latestCandle.close,
       candles,
+    headlines,
       lastUpdated: new Date().toISOString(),
     };
 

@@ -17,50 +17,56 @@ export class AiInsightService {
     latestPrice: number;
     rsi: number | null;
     sma: number | null;
+    newsHeadlines: string[];
   }) {
     try {
-      //   const prompt = `
-      //     You are Orion, a friendly and clear financial guide for everyday people.
-      //     Analyze this market data and provide a simple report in **plain, everyday English**.
 
-      //     CRITICAL RULE: Do NOT use heavy financial jargon or acronyms like "RSI" or "SMA" without explaining them instantly in simple terms.
-      //     - Translate the 20-period moving average into: "the recent average price".
-      //     - Translate the RSI into: "momentum (how fast prices have been rising or falling)".
+const { symbol, interval, assetType, latestPrice, rsi, sma, newsHeadlines } = marketData;
 
-      //     - Asset: ${marketData.symbol}
-      //     - Timeframe: ${marketData.interval}
-      //     - Current Price: ${marketData.latestPrice}
-      //     - Momentum / RSI: ${marketData.rsi !== null ? marketData.rsi.toFixed(2) : "N/A"}
-      //     - Recent Average Price (SMA): ${marketData.sma !== null ? marketData.sma.toFixed(2) : "N/A"}
+    const newsContext = newsHeadlines && newsHeadlines.length > 0 
+      ? newsHeadlines.map((h, i) => `${i + 1}. "${h}"`).join('\n')
+      : 'No major breaking headlines found for this session.';
 
-      //     Provide your response in this exact simple format:
-      //     1. **Market Summary:** (1 clear sentence on what the market is doing right now using everyday terms)
-      //     2. **For Day Traders:** (1 short, practical idea for short-term traders)
-      //     3. **For Swing Traders:** (1 short, practical idea for multi-day traders)
-      //     4. **Key Level to Watch:** (One vital price point explained simply)
-      //   `;
-      const prompt = `
-        You are Orion, an elite and direct trading assistant built in the style of JARVIS. You provide clear, objective market analysis without being overly restrictive.
-        Analyze this market data and provide a concise report in **plain, everyday English**. 
+    const prompt = `
+      You are Orion, an elite quantitative and sentiment trading assistant. 
+      Analyze the current market data and breaking news sentiment for ${symbol} (${assetType}) on the ${interval} timeframe.
 
-        CRITICAL RULES:
-        1. Do NOT use heavy financial jargon without instant plain English translation:
-           - SMA (20) = "recent average price"
-           - RSI = "momentum (how fast prices have been rising or falling)"
-        2. Instead of blocking trades, explain the current state, what to expect next, and outline precise conditional entry setups if the market moves in a favorable direction.
+      --- QUANTITATIVE METRICS ---
+      - Current Price: ${latestPrice}
+      - RSI (Momentum): ${rsi !== null ? rsi.toFixed(2) : 'N/A'}
+      - SMA (Trend Average): ${sma !== null ? sma.toFixed(2) : 'N/A'}
 
-        - Asset: ${marketData.symbol}
-        - Timeframe: ${marketData.interval}
-        - Current Price: ${marketData.latestPrice}
-        - Momentum / RSI: ${marketData.rsi !== null ? marketData.rsi.toFixed(2) : "N/A"}
-        - Recent Average Price (SMA): ${marketData.sma !== null ? marketData.sma.toFixed(2) : "N/A"}
+      --- RECENT NEWS & SENTIMENT ---
+      ${newsContext}
 
-        Provide your response in this exact format:
-        1. **Market Status:** (1 clear sentence on current market state)
-        2. **Analysis & Expectation:** (What the price and indicators are signaling and what to expect next)
-        3. **Conditional Setup & Entry:** (If market moves our way, exact zone to look for entry and safety stop)
-        4. **Key Level to Watch:** (One vital price point)
-      `;
+      Provide your analysis strictly structured into these 4 numbered sections:
+      1. **Market Status:** (Summarize price action and prevailing trend considering both data and news sentiment).
+      2. **Analysis & Expectation:** (Blend technical indicator readings with macro news catalysts to explain why the market is behaving this way).
+      3. **Conditional Setup & Entry:** (Provide specific entry zones, strategy, and risk management/stop-loss levels).
+      4. **Key Level to Watch:** (Highlight the most critical price boundary or support/resistance ceiling).
+    `;
+    //   const prompt = `
+    //     You are Orion, an elite and direct trading assistant built in the style of JARVIS. You provide clear, objective market analysis without being overly restrictive.
+    //     Analyze this market data and provide a concise report in **plain, everyday English**. 
+
+    //     CRITICAL RULES:
+    //     1. Do NOT use heavy financial jargon without instant plain English translation:
+    //        - SMA (20) = "recent average price"
+    //        - RSI = "momentum (how fast prices have been rising or falling)"
+    //     2. Instead of blocking trades, explain the current state, what to expect next, and outline precise conditional entry setups if the market moves in a favorable direction.
+
+    //     - Asset: ${marketData.symbol}
+    //     - Timeframe: ${marketData.interval}
+    //     - Current Price: ${marketData.latestPrice}
+    //     - Momentum / RSI: ${marketData.rsi !== null ? marketData.rsi.toFixed(2) : "N/A"}
+    //     - Recent Average Price (SMA): ${marketData.sma !== null ? marketData.sma.toFixed(2) : "N/A"}
+
+    //     Provide your response in this exact format:
+    //     1. **Market Status:** (1 clear sentence on current market state)
+    //     2. **Analysis & Expectation:** (What the price and indicators are signaling and what to expect next)
+    //     3. **Conditional Setup & Entry:** (If market moves our way, exact zone to look for entry and safety stop)
+    //     4. **Key Level to Watch:** (One vital price point)
+    //   `;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",

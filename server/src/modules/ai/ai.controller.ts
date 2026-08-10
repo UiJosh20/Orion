@@ -36,6 +36,8 @@ export const getAiMarketInsight = async (req: Request, res: Response) => {
       latestPrice: marketData.latestPrice,
       rsi: currentRsi,
       sma: currentSma,
+      newsHeadlines:marketData.headlines || [],
+      
     });
 
     return res.status(200).json({

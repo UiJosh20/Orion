@@ -12,4 +12,5 @@ export const ENV = {
   TWELVE_DATA_API_KEY: process.env.TWELVE_DATA_API_KEY || '',
   REDIS_URL: process.env.REDIS_URL || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  TIINGO_API_KEY: process.env.TIINGO_API_KEY || '',
 };

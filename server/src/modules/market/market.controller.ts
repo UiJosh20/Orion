@@ -9,7 +9,7 @@ export const getTechnicalAnalysis = async (req: Request, res: Response) => {
 
     // Fetch data dynamically through the orchestrator (Redis + Auto-Background Tracking)
     const marketData = await MarketOrchestrator.getDynamicMarketData(symbol, interval);
-    console.log(marketData, "marketData");
+    // console.log(marketData, "marketData")
 
     // Defensive check: ensure candles exist and form an array
     if (!marketData || !marketData.candles || !Array.isArray(marketData.candles) || marketData.candles.length === 0) {
