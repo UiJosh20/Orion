@@ -322,13 +322,25 @@ export class MarketOrchestrator {
     const formattedSymbol = symbol.trim().toUpperCase();
     const cleanRedisKey = `orion:live:${formattedSymbol.replace("/", "")}:${interval}`;
 
-    // 1. Check if live data already exists in Redis cache
+    // 1. Check Redis cache and validate its structure
     const cachedData = await redisClient.get(cleanRedisKey);
     if (cachedData) {
-      return JSON.parse(cachedData);
+      try {
+        const parsed = JSON.parse(cachedData);
+        // Ensure the cached object actually has a valid candles array
+        if (parsed && Array.isArray(parsed.candles) && parsed.candles.length > 0) {
+          return parsed;
+        } else {
+          console.warn(`[Market Orchestrator]: Malformed cache found for ${cleanRedisKey}. Purging...`);
+          await redisClient.del(cleanRedisKey);
+        }
+      } catch (err) {
+        // If JSON parsing fails, clear the bad key
+        await redisClient.del(cleanRedisKey);
+      }
     }
 
-    // 2. If not cached, fetch it immediately via REST to satisfy the current request
+    // 2. If not cached or purged, fetch it immediately via REST
     const candles = await MarketService.getCandles(
       formattedSymbol,
       interval,
@@ -354,10 +366,10 @@ export class MarketOrchestrator {
       lastUpdated: new Date().toISOString(),
     };
 
-    // Save to Redis cache
+    // Save proper structure to Redis cache
     await redisClient.set(cleanRedisKey, JSON.stringify(marketPayload));
 
-    // 3. Dynamically spin up background tracking so subsequent requests are lightning-fast
+    // 3. Spin up background tracking for subsequent requests
     this.ensureBackgroundTracking(formattedSymbol, interval);
 
     return marketPayload;
@@ -367,7 +379,6 @@ export class MarketOrchestrator {
     const isCrypto = !symbol.includes("/") && symbol.length !== 6;
 
     if (isCrypto) {
-      // Dynamic Crypto WebSocket Stream
       const streamId = `${symbol}:${interval}`;
       if (!this.activeCryptoStreams.has(streamId)) {
         console.log(
@@ -384,18 +395,17 @@ export class MarketOrchestrator {
             if (cachedPayloadStr) {
               try {
                 const payload = JSON.parse(cachedPayloadStr);
+                // Ensure payload has candles array before updating
+                if (payload && Array.isArray(payload.candles)) {
+                  payload.latestPrice = liveCandle.close ?? payload.latestPrice;
+                  payload.lastUpdated = new Date().toISOString();
 
-                // Update latest price from live stream
-                payload.latestPrice = liveCandle.close ?? payload.latestPrice;
-                payload.lastUpdated = new Date().toISOString();
+                  if (payload.candles.length > 0) {
+                    payload.candles[payload.candles.length - 1] = liveCandle;
+                  }
 
-                // Optionally update the latest candle in the array or push it
-                if (payload.candles && payload.candles.length > 0) {
-                  payload.candles[payload.candles.length - 1] = liveCandle;
+                  await redisClient.set(redisKey, JSON.stringify(payload));
                 }
-
-                // Save the full, intact payload structure back to Redis
-                await redisClient.set(redisKey, JSON.stringify(payload));
               } catch (err) {
                 console.error("[WebSocket Cache Update Error]:", err);
               }
@@ -406,7 +416,6 @@ export class MarketOrchestrator {
         this.activeCryptoStreams.add(streamId);
       }
     } else {
-      // Dynamic Forex Poller (Polled every 60s to protect rate limits)
       const pollerId = `${symbol}:${interval}`;
       if (!this.activeForexPollers.has(pollerId)) {
         console.log(
