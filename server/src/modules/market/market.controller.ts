@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { MarketMathService, MarketOrchestrator } from './market.service.js';
+import { MarketMathService, MarketOrchestrator, MarketWatchList } from './market.service.js';
 
 
 export const getTechnicalAnalysis = async (req: Request, res: Response) => {
@@ -44,5 +44,45 @@ export const getTechnicalAnalysis = async (req: Request, res: Response) => {
       status: 'error',
       message: error.message || 'Failed to calculate market technical indicators.',
     });
+  }
+};
+
+
+
+
+export const getSymbols = async (req: Request, res: Response) => {
+  try {
+    const { category } = req.query;
+    const data = await MarketWatchList.getSupportedSymbols(category as string);
+    return res.json(data);
+  } catch (error) {
+    console.error('Error in getSymbols:', error);
+    return res.status(500).json({ error: 'Failed to fetch symbols' });
+  }
+};
+
+export const getWatchlist = async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const watchlist = await MarketWatchList.getUserWatchlist(userId);
+    return res.json({ watchlist });
+  } catch (error) {
+    console.error('Error in getWatchlist:', error);
+    return res.status(500).json({ error: 'Failed to fetch watchlist' });
+  }
+};
+
+export const addToWatchlist = async (req: Request, res: Response) => {
+  try {
+    const { userId, symbol } = req.body;
+    if (!userId || !symbol) {
+      return res.status(400).json({ error: 'userId and symbol are required' });
+    }
+
+    const result = await MarketWatchList.addToWatchlist(userId, symbol);
+    return res.status(201).json({ message: 'Added to watchlist', data: result });
+  } catch (error) {
+    console.error('Error in addToWatchlist:', error);
+    return res.status(500).json({ error: 'Failed to add to watchlist' });
   }
 };

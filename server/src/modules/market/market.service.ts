@@ -4,51 +4,61 @@ import axios from "axios";
 import WebSocket from "ws";
 import { redisClient } from "../../config/redis.js";
 import { NewsService } from "../news/news.service.js";
+import pgPool from "../../config/db.js";
 
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const BINANCE_URL = "https://api.binance.com/api/v3";
 const TWELVE_DATA_API_KEY = ENV.TWELVE_DATA_API_KEY;
 
 export class MarketService {
-  /**
-   * Route candle fetching dynamically based on asset type
-   * @param symbol E.g., 'BTCUSDT' for crypto or 'EUR/USD' for forex
-   * @param interval Timeframe ('1h', '1d', etc.)
-   * @param limit Number of data points
-   */
   public static async getCandles(
     symbol: string = "BTCUSDT",
     interval: string = "1h",
-    limit: number = 50,
+    limit: number = 50
   ) {
     let formattedSymbol = symbol.trim().toUpperCase();
 
-    // Determine if it's crypto vs forex based on common crypto quote suffixes
     const cryptoQuotes = ["USDT", "BTC", "ETH", "BNB", "BUSD", "USDC"];
     const isCrypto =
       cryptoQuotes.some((q) => formattedSymbol.endsWith(q)) ||
       formattedSymbol.includes("USDT");
 
     if (!isCrypto) {
-      // Automatically insert a slash for standard 6-letter forex pairs if missing (e.g., GBPUSD -> GBP/USD)
       if (formattedSymbol.length === 6 && !formattedSymbol.includes("/")) {
         formattedSymbol = `${formattedSymbol.slice(0, 3)}/${formattedSymbol.slice(3)}`;
       }
       return await this.fetchTwelveDataForex(formattedSymbol, interval, limit);
     } else {
-      // Normalize crypto symbols for Binance (e.g., BTC/USDT -> BTCUSDT)
       const binanceSymbol = formattedSymbol.replace("/", "");
       return await this.fetchBinanceCrypto(binanceSymbol, interval, limit);
     }
   }
 
+  /**
+   * 👈 NEW: Returns historical candles with Unix timestamps in seconds
+   * specifically formatted for TradingView Lightweight Charts.
+   */
+  public static async getHistoricalKlines(
+    symbol: string = "BTCUSDT",
+    interval: string = "1h",
+    limit: number = 200
+  ) {
+    const candles = await this.getCandles(symbol, interval, limit);
+    return candles.map((c: any) => ({
+      time: Math.floor(new Date(c.datetime).getTime() / 1000),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    }));
+  }
+
   private static async fetchBinanceCrypto(
     symbol: string,
     interval: string,
-    limit: number,
+    limit: number
   ) {
     try {
-      // Normalize crypto symbols for Binance (e.g., BTC/USDT -> BTCUSDT)
       const formattedSymbol = symbol.replace("/", "").toUpperCase();
 
       const response = await axios.get(`${BINANCE_URL}/klines`, {
@@ -59,7 +69,6 @@ export class MarketService {
         },
       });
 
-      // Map Binance array format [openTime, open, high, low, close, volume, ...]
       return response.data.map((item: any[]) => ({
         datetime: new Date(item[0]).toISOString(),
         open: parseFloat(item[1]),
@@ -77,7 +86,7 @@ export class MarketService {
   private static async fetchTwelveDataForex(
     symbol: string,
     interval: string,
-    limit: number,
+    limit: number
   ) {
     try {
       const response = await axios.get(`${TWELVE_DATA_URL}/time_series`, {
@@ -91,7 +100,7 @@ export class MarketService {
 
       if (response.data.status === "error") {
         throw new Error(
-          response.data.message || `Failed to fetch forex data for ${symbol}`,
+          response.data.message || `Failed to fetch forex data for ${symbol}`
         );
       }
 
@@ -115,34 +124,16 @@ export class MarketService {
 export class MarketMathService {
   public static calculateRSI(
     closingPrice: number[],
-    period: number = 14,
+    period: number = 14
   ): number[] {
-    /**
-     * Calculate Relative Strength Index (RSI) for trend momentum
-     * @param closingPrices Array of historical close prices (e.g., [1.0850, 1.0862, ...])
-     * @param period Lookback period, typically 14
-     */
-    const input = {
-      values: closingPrice,
-      period,
-    };
-    return RSI.calculate(input);
+    return RSI.calculate({ values: closingPrice, period });
   }
 
   public static calculateSMA(
     closingPrice: number[],
-    period: number = 14,
+    period: number = 14
   ): number[] {
-    /**
-     * Calculate Simple Moving Average (SMA) for trend smoothing
-     * @param closingPrices Array of historical close prices (e.g., [1.0850, 1.0862, ...])
-     * @param period Lookback period, typically 14
-     */
-    const input = {
-      values: closingPrice,
-      period,
-    };
-    return SMA.calculate(input);
+    return SMA.calculate({ values: closingPrice, period });
   }
 }
 
@@ -155,21 +146,20 @@ export class CryptoWsService {
   public static subscribeToKline(
     symbol: string,
     interval: string,
-    callback: (candle: any) => void,
+    callback: (candle: any) => void
   ) {
     const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
     this.subscribers.set(streamName, callback);
 
     if (this.activeStreams.has(streamName)) {
-      return; // Already streaming this pair/interval
+      return;
     }
 
     this.activeStreams.add(streamName);
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
       this.connectMasterSocket();
-    } else {
-      // Send dynamic subscription frame to existing master socket
+    } else if (this.ws.readyState === WebSocket.OPEN) {
       const subPayload = JSON.stringify({
         method: "SUBSCRIBE",
         params: [streamName],
@@ -196,7 +186,6 @@ export class CryptoWsService {
     this.ws.on("message", (data: WebSocket.Data) => {
       try {
         const parsed = JSON.parse(data.toString());
-        // Combined stream structure: { stream: 'btcusdt@kline_1h', data: { ... } }
         if (parsed.stream && parsed.data && parsed.data.k) {
           const kline = parsed.data.k;
           const formattedCandle = {
@@ -220,9 +209,7 @@ export class CryptoWsService {
     });
 
     this.ws.on("close", () => {
-      console.warn(
-        "[Crypto WS]: Master connection closed. Reconnecting in 5s...",
-      );
+      console.warn("[Crypto WS]: Master connection closed. Reconnecting in 5s...");
       this.scheduleReconnect();
     });
 
@@ -243,33 +230,24 @@ export class CryptoWsService {
 export class ForexPollerService {
   private static pollingIntervals: Map<string, NodeJS.Timeout> = new Map();
 
-  /**
-   * Start polling a forex pair periodically in the background
-   * @param symbol E.g., 'EUR/USD'
-   * @param interval Timeframe ('1h', '1d', etc.)
-   * @param frequencyMs How often to poll (default to 60,000ms / 1 min to stay safe on free limits)
-   */
   public static startPolling(
     symbol: string = "EUR/USD",
     interval: string = "1h",
-    frequencyMs: number = 60000,
+    frequencyMs: number = 60000
   ) {
     const formattedSymbol = symbol.toUpperCase();
     const pollerKey = `${formattedSymbol}:${interval}`;
 
-    // Clear existing interval if already running
     if (this.pollingIntervals.has(pollerKey)) {
       clearInterval(this.pollingIntervals.get(pollerKey)!);
     }
 
     console.log(
-      `[Forex Poller]: Initialized background polling for ${formattedSymbol} every ${frequencyMs / 1000}s`,
+      `[Forex Poller]: Initialized background polling for ${formattedSymbol} every ${frequencyMs / 1000}s`
     );
 
-    // Perform an initial fetch immediately on startup
     this.fetchAndCacheForex(formattedSymbol, interval);
 
-    // Set up recurring background poll
     const intervalId = setInterval(async () => {
       await this.fetchAndCacheForex(formattedSymbol, interval);
     }, frequencyMs);
@@ -279,7 +257,6 @@ export class ForexPollerService {
 
   private static async fetchAndCacheForex(symbol: string, interval: string) {
     try {
-      // Calls your existing Twelve Data REST service method
       const candles = await MarketService.getCandles(symbol, interval, 50);
 
       const latestCandle = candles[candles.length - 1];
@@ -292,12 +269,25 @@ export class ForexPollerService {
         lastUpdated: new Date().toISOString(),
       };
 
-      // Store in Redis just like the crypto WebSocket data
       const redisKey = `orion:live:${symbol.replace("/", "")}:${interval}`;
       await redisClient.set(redisKey, JSON.stringify(marketDataPayload));
 
+      // 👈 Publish Forex update to Redis PubSub for Socket.IO clients
+      const chartCandle = {
+        time: Math.floor(new Date(latestCandle.datetime).getTime() / 1000),
+        open: latestCandle.open,
+        high: latestCandle.high,
+        low: latestCandle.low,
+        close: latestCandle.close,
+      };
+
+      await redisClient.publish(
+        "ORION_KLINES",
+        JSON.stringify({ symbol, interval, candle: chartCandle })
+      );
+
       console.log(
-        `[Forex Poller]: Successfully polled & cached ${symbol} -> Latest Close: ${latestCandle.close}`,
+        `[Forex Poller]: Successfully polled & cached ${symbol} -> Latest Close: ${latestCandle.close}`
       );
     } catch (error: any) {
       console.error(`[Forex Poller Error - ${symbol}]:`, error.message);
@@ -318,51 +308,43 @@ export class MarketOrchestrator {
   private static activeCryptoStreams: Set<string> = new Set();
   private static activeForexPollers: Set<string> = new Set();
 
-  /**
-   * Dynamically get market data, serving from Redis cache if available,
-   * while ensuring background tracking is active for the requested symbol.
-   */
   public static async getDynamicMarketData(
     symbol: string,
-    interval: string = "1h",
+    interval: string = "1h"
   ) {
     const formattedSymbol = symbol.trim().toUpperCase();
     const cleanRedisKey = `orion:live:${formattedSymbol.replace("/", "")}:${interval}`;
 
-    // 1. Check Redis cache and validate its structure
     const cachedData = await redisClient.get(cleanRedisKey);
     if (cachedData) {
       try {
         const parsed = JSON.parse(cachedData);
-        // Ensure the cached object actually has a valid candles array
         if (
           parsed &&
           Array.isArray(parsed.candles) &&
           parsed.candles.length > 0
         ) {
+          this.ensureBackgroundTracking(formattedSymbol, interval);
           return parsed;
         } else {
           console.warn(
-            `[Market Orchestrator]: Malformed cache found for ${cleanRedisKey}. Purging...`,
+            `[Market Orchestrator]: Malformed cache found for ${cleanRedisKey}. Purging...`
           );
           await redisClient.del(cleanRedisKey);
         }
       } catch (err) {
-        // If JSON parsing fails, clear the bad key
         await redisClient.del(cleanRedisKey);
       }
     }
 
-    // 2. If not cached or purged, fetch it immediately via REST
     const [candles, headlines] = await Promise.all([
       MarketService.getCandles(formattedSymbol, interval, 50),
       NewsService.fetchNews(formattedSymbol),
     ]);
 
-
     if (!candles || !Array.isArray(candles) || candles.length === 0) {
       throw new Error(
-        `Failed to retrieve valid candle data for ${formattedSymbol}`,
+        `Failed to retrieve valid candle data for ${formattedSymbol}`
       );
     }
 
@@ -377,14 +359,11 @@ export class MarketOrchestrator {
           : "crypto",
       latestPrice: latestCandle.close,
       candles,
-    headlines,
+      headlines,
       lastUpdated: new Date().toISOString(),
     };
 
-    // Save proper structure to Redis cache
     await redisClient.set(cleanRedisKey, JSON.stringify(marketPayload));
-
-    // 3. Spin up background tracking for subsequent requests
     this.ensureBackgroundTracking(formattedSymbol, interval);
 
     return marketPayload;
@@ -397,20 +376,38 @@ export class MarketOrchestrator {
       const streamId = `${symbol}:${interval}`;
       if (!this.activeCryptoStreams.has(streamId)) {
         console.log(
-          `[Market Orchestrator]: Spawning dynamic Binance WebSocket for ${symbol}`,
+          `[Market Orchestrator]: Spawning dynamic Binance WebSocket for ${symbol}`
         );
 
         CryptoWsService.subscribeToKline(
           symbol,
           interval,
           async (liveCandle: any) => {
+            const chartCandle = {
+              time: Math.floor(liveCandle.timestamp / 1000),
+              open: liveCandle.open,
+              high: liveCandle.high,
+              low: liveCandle.low,
+              close: liveCandle.close,
+            };
+
+            // 👈 1. Publish real-time tick to Redis Pub/Sub channel (ORION_KLINES)
+            await redisClient.publish(
+              "ORION_KLINES",
+              JSON.stringify({
+                symbol,
+                interval,
+                candle: chartCandle,
+              })
+            );
+
+            // 👈 2. Update KV cache in Redis
             const redisKey = `orion:live:${symbol.replace("/", "")}:${interval}`;
             const cachedPayloadStr = await redisClient.get(redisKey);
 
             if (cachedPayloadStr) {
               try {
                 const payload = JSON.parse(cachedPayloadStr);
-                // Ensure payload has candles array before updating
                 if (payload && Array.isArray(payload.candles)) {
                   payload.latestPrice = liveCandle.close ?? payload.latestPrice;
                   payload.lastUpdated = new Date().toISOString();
@@ -425,7 +422,7 @@ export class MarketOrchestrator {
                 console.error("[WebSocket Cache Update Error]:", err);
               }
             }
-          },
+          }
         );
 
         this.activeCryptoStreams.add(streamId);
@@ -434,11 +431,56 @@ export class MarketOrchestrator {
       const pollerId = `${symbol}:${interval}`;
       if (!this.activeForexPollers.has(pollerId)) {
         console.log(
-          `[Market Orchestrator]: Spawning dynamic Forex poller for ${symbol}`,
+          `[Market Orchestrator]: Spawning dynamic Forex poller for ${symbol}`
         );
         ForexPollerService.startPolling(symbol, interval, 60000);
         this.activeForexPollers.add(pollerId);
       }
     }
+  }
+}
+
+export class MarketWatchList {
+  public static async getSupportedSymbols(category?: string) {
+    let query = 'SELECT symbol, name, category, exchange FROM supported_symbols';
+    const params: string[] = [];
+
+    if (category) {
+      query += ' WHERE LOWER(category) = $1';
+      params.push(category.toLowerCase());
+    }
+
+    const { rows } = await pgPool.query(query, params);
+
+    if (!category) {
+      return {
+        crypto: rows.filter((r) => r.category === 'crypto'),
+        forex: rows.filter((r) => r.category === 'forex'),
+      };
+    }
+
+    return { symbols: rows };
+  }
+
+  public static async getUserWatchlist(userId: string | any) {
+    const query = `
+      SELECT s.symbol, s.name, s.category, s.exchange 
+      FROM user_watchlist w
+      JOIN supported_symbols s ON w.symbol = s.symbol
+      WHERE w.user_id = $1
+    `;
+    const { rows } = await pgPool.query(query, [userId]);
+    return rows;
+  }
+
+  public static async addToWatchlist(userId: string, symbol: string) {
+    const query = `
+      INSERT INTO user_watchlist (user_id, symbol)
+      VALUES ($1, $2)
+      ON CONFLICT (user_id, symbol) DO NOTHING
+      RETURNING *;
+    `;
+    const { rows } = await pgPool.query(query, [userId, symbol]);
+    return rows[0];
   }
 }

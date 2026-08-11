@@ -1,8 +1,11 @@
 import { Router } from 'express';
-import { getTechnicalAnalysis } from './market.controller.js';
+import { addToWatchlist, getSymbols, getTechnicalAnalysis, getWatchlist } from './market.controller.js';
 
 const router = Router();
 
 router.get('/analyze', getTechnicalAnalysis);
+router.get('/symbols', getSymbols);
+router.get('/watchlist/:userId', getWatchlist);
+router.post('/watchlist', addToWatchlist);
 
 export default router;

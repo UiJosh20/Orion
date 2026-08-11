@@ -47,3 +47,21 @@ CREATE TABLE IF NOT EXISTS user_alerts (
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Supported assets for search autocomplete
+CREATE TABLE IF NOT EXISTS supported_symbols (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    category VARCHAR(20) NOT NULL, -- 'crypto' or 'forex'
+    exchange VARCHAR(50) NOT NULL
+);
+
+-- User watchlist
+CREATE TABLE IF NOT EXISTS user_watchlist (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(100) NOT NULL,
+    symbol VARCHAR(50) REFERENCES supported_symbols(symbol) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, symbol)
+);

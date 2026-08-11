@@ -13,4 +13,9 @@ export const ENV = {
   REDIS_URL: process.env.REDIS_URL || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   TIINGO_API_KEY: process.env.TIINGO_API_KEY || '',
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+  JWT_ACCESS_SECRET: process.env.JWT_ACCESS_SECRET || '',
+  JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || '',
+  JWT_ACCESS_EXPIRY: process.env.JWT_ACCESS_EXPIRY || '1h',
+  JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || '7d',
 };
