@@ -12,7 +12,7 @@ export interface SupportedSymbol {
 
 export const marketService = {
   getSupportedSymbols: async (): Promise<SupportedSymbol[]> => {
-    const response = await api.get(ENDPOINTS.MARKET.SYMBOLS);
+    const response = await api.get(ENDPOINTS.MARKET.SYMBOLS, {params:{category:'crypto'}}); 
     return response.data;
   },
 

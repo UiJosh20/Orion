@@ -24,3 +24,34 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+  .header-dropdown {
+    max-height: 70vh;
+  }
+  
+  .timeframe-scroll {
+    scroll-snap-type: x mandatory;
+  }
+  
+  .timeframe-scroll > * {
+    scroll-snap-align: start;
+  }
+}
+
+/* Dark mode transitions */
+.dark .header-gradient {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0) 100%);
+}
+
+/* Focus visible for accessibility */
+*:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+}
+
+/* Smooth animations */
+.smooth-transition {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}

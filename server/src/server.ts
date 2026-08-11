@@ -15,9 +15,16 @@ const server = http.createServer(app);
 // Initialize Socket.IO server
 export const io = new SocketIOServer(server, {
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"],
+    origin: ["http://localhost:3000", "http://localhost:3001"], // Add all frontend URLs
+    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"],
   },
+  // Allow both WebSocket and polling
+  transports: ["websocket", "polling"],
+  // Increase ping timeout for slower connections
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 const startServer = async () => {
@@ -34,8 +41,8 @@ const startServer = async () => {
     // 3. Register Redis Pub/Sub Listener Channels
     await initRedisSubscriptions(io);
 
-    // 4. Start Background Monitoring Worker
-    AlertWorkerService.startAlertEngine(10000);
+    // 4. Start Background Monitoring Worker (Pass 'io' instance here)
+    AlertWorkerService.startAlertEngine(io, 10000);
 
     // 5. Start Server
     server.listen(PORT, () => {

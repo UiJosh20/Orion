@@ -64,7 +64,7 @@ export const getSymbols = async (req: Request, res: Response) => {
 export const getWatchlist = async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    const watchlist = await MarketWatchList.getUserWatchlist(userId);
+    const watchlist = await MarketWatchList.getUserWatchlist(userId as any);
     return res.json({ watchlist });
   } catch (error) {
     console.error('Error in getWatchlist:', error);

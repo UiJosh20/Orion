@@ -127,6 +127,31 @@
         }
       }
     },
+    "/api/auth/device": {
+      "post": {
+        "description": "",
+        "parameters": [
+          {
+            "name": "x-device-uuid",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
     "/api/market/analyze": {
       "get": {
         "description": "",
@@ -285,6 +310,48 @@
           },
           "500": {
             "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/alerts/test": {
+      "post": {
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "example": "any"
+                  },
+                  "symbol": {
+                    "example": "any"
+                  },
+                  "price": {
+                    "example": "any"
+                  },
+                  "condition": {
+                    "example": "any"
+                  },
+                  "threshold": {
+                    "example": "any"
+                  }
+                }
+              }
+            }
           }
         }
       }

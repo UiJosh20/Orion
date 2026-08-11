@@ -1,3 +1,4 @@
+// sockets/index.ts
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { MarketService, MarketOrchestrator } from "../modules/market/market.service.js";
 
@@ -6,9 +7,21 @@ export function initSocketHandlers(io: SocketIOServer) {
     console.log(`[WebSocket]: Client connected (${socket.id})`);
 
     // 1. Personal Room Subscription for private alerts
+    socket.on("join", (userId: string) => {
+      if (!userId) return;
+      // Use consistent room naming with colon
+      const roomName = `user:${userId}`;
+      socket.join(roomName);
+      console.log(`[WebSocket]: Socket ${socket.id} joined ${roomName}`);
+      
+      // Send confirmation back
+      socket.emit("join_confirmed", { room: roomName, userId });
+    });
+
+    // Also support the old event name for backward compatibility
     socket.on("join_user_room", (userId: string) => {
       if (!userId) return;
-      const roomName = `user_${userId}`;
+      const roomName = `user:${userId}`;
       socket.join(roomName);
       console.log(`[WebSocket]: Socket ${socket.id} joined ${roomName}`);
     });
@@ -17,7 +30,7 @@ export function initSocketHandlers(io: SocketIOServer) {
     socket.on("subscribe_symbol", async (symbol: string, interval: string = "1h") => {
       if (!symbol) return;
       const formattedSymbol = symbol.toUpperCase().trim();
-      const roomName = `symbol_${formattedSymbol.replace("/", "")}`;
+      const roomName = `symbol:${formattedSymbol.replace("/", "")}`;
 
       socket.join(roomName);
       console.log(`[WebSocket]: Socket ${socket.id} subscribed to ${roomName}`);
@@ -34,7 +47,7 @@ export function initSocketHandlers(io: SocketIOServer) {
     socket.on("unsubscribe_symbol", (symbol: string) => {
       if (!symbol) return;
       const formattedSymbol = symbol.toUpperCase().trim();
-      const roomName = `symbol_${formattedSymbol.replace("/", "")}`;
+      const roomName = `symbol:${formattedSymbol.replace("/", "")}`;
 
       socket.leave(roomName);
       console.log(`[WebSocket]: Socket ${socket.id} unsubscribed from ${roomName}`);
