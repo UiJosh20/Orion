@@ -37,7 +37,7 @@ export function SocketProvider({
 
     console.log(`[Socket]: Initializing connection for user: ${userId}`);
 
-    const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000";
     console.log(`[Socket]: Connecting to ${socketUrl}`);
 
     const socketInstance = io(socketUrl, {
