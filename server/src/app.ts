@@ -12,6 +12,7 @@ import alertRoutes from './modules/alert/alert.routes.js';
 import aiRoutes from './modules/ai/ai.routes.js';
 import sessionRoutes from './modules/session/session.routes.js';
 import authRoutes from './modules/auth/auth.routes.js'; // 👈 1. IMPORT AUTH ROUTES
+import { ENV } from './config/env.js';
 
 const app: Application = express();
 
@@ -21,7 +22,7 @@ app.set('trust proxy', 1);
 // 1. CORS (Must come before rate-limiter so OPTIONS preflights pass through)
 app.use(
   cors({
-    // origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: ENV.CLIENT_URL || 'http://localhost:3000',
     // origin: 'http://localhost:3000',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
