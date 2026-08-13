@@ -9,7 +9,9 @@
     "db:migrate": "tsx src/scripts/migration.ts",
     "swagger:gen": "tsx src/swagger-gen.ts",
     "clear:redis": "tsx src/scripts/clearRedis.ts",
-    "seed:symbols": "tsx src/scripts/seedSymbols.ts"
+    "seed:symbols": "tsx src/scripts/seedSymbols.ts",
+     "start": "tsx src/server.ts",
+    "build": "echo 'No build step required'"
   },
   "keywords": [],
   "author": "",
