@@ -1,64 +1,51 @@
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+'use client';
 
-export interface OrionSuggestion {
-  symbol: string;
-  suggestedPrice: number;
-  condition: 'ABOVE' | 'BELOW';
-  rationale?: string;
+import { create } from 'zustand';
+import { UTCTimestamp } from 'lightweight-charts';
+import { AiDrawing } from '../components/DrawingsOverlay';
+
+export interface TradePosition {
+  side: 'LONG' | 'SHORT';
+  entry: number;
+  stopLoss: number;
+  target: number;
+  time: UTCTimestamp;
 }
 
-interface MarketState {
+interface MarketStore {
   activeSymbol: string;
   activeInterval: string;
-  isSearchOpen: boolean;
-  customSymbols: string[];
-  
-  // Modal State & Actions
-  isAlertModalOpen: boolean;
-  orionSuggestion: OrionSuggestion | null;
-  openAlertModal: (suggestion?: OrionSuggestion | null) => void;
-  closeAlertModal: () => void;
-
-  // Existing Actions
+  riskPercent: number;
+  riskRewardRatio: number;
+  accountBalance: number;
+  activePosition: TradePosition | null;
+  aiDrawings: AiDrawing[];
   setActiveSymbol: (symbol: string) => void;
   setActiveInterval: (interval: string) => void;
-  setSearchOpen: (open: boolean) => void;
-  addCustomSymbol: (symbol: string) => void;
-  removeCustomSymbol: (symbol: string) => void;
+  setRiskConfig: (riskPercent: number, riskRewardRatio: number) => void;
+  setAccountBalance: (balance: number) => void;
+  setActivePosition: (position: TradePosition | null) => void;
+  setAiDrawings: (drawings: AiDrawing[]) => void;
+  alertModalData: any;
+  openAlertModal: (data: any) => void;
+  closeAlertModal: () => void;
 }
 
-export const useMarketStore = create<MarketState>()(
-  persist(
-    (set) => ({
-      activeSymbol: 'BTCUSDT',
-      activeInterval: '1h',
-      isSearchOpen: false,
-      customSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'EURUSD'],
-
-      // Modal Initial States
-      isAlertModalOpen: false,
-      orionSuggestion: null,
-
-      openAlertModal: (suggestion = null) => set({ isAlertModalOpen: true, orionSuggestion: suggestion }),
-      closeAlertModal: () => set({ isAlertModalOpen: false, orionSuggestion: null }),
-
-      setActiveSymbol: (symbol) => set({ activeSymbol: symbol.toUpperCase() }),
-      setActiveInterval: (interval) => set({ activeInterval: interval }),
-      setSearchOpen: (open) => set({ isSearchOpen: open }),
-
-      addCustomSymbol: (symbol) => set((state) => {
-        const formatted = symbol.toUpperCase().trim();
-        if (!formatted || state.customSymbols.includes(formatted)) return state;
-        return { customSymbols: [...state.customSymbols, formatted] };
-      }),
-
-      removeCustomSymbol: (symbol) => set((state) => ({
-        customSymbols: state.customSymbols.filter((s) => s !== symbol)
-      })),
-    }),
-    {
-      name: 'orion-market-store',
-    }
-  )
-);
+export const useMarketStore = create<MarketStore>((set) => ({
+  activeSymbol: 'BTCUSDT',
+  activeInterval: '1h',
+  riskPercent: 1.0,
+  riskRewardRatio: 2.0,
+  accountBalance: 0,
+  activePosition: null,
+  aiDrawings: [],
+  setActiveSymbol: (activeSymbol) => set({ activeSymbol }),
+  setActiveInterval: (activeInterval) => set({ activeInterval }),
+  setRiskConfig: (riskPercent, riskRewardRatio) => set({ riskPercent, riskRewardRatio }),
+  setAccountBalance: (accountBalance) => set({ accountBalance }),
+  setActivePosition: (activePosition) => set({ activePosition }),
+  setAiDrawings: (aiDrawings) => set({ aiDrawings }),
+  alertModalData: null,
+  openAlertModal: (data) => set({ alertModalData: data }),
+  closeAlertModal: () => set({ alertModalData: null }),
+}));

@@ -3,7 +3,7 @@ import { api } from "../libs/api/client";
 
 
 export interface SupportedSymbol {
-  id: number;
+  id: number | string;
   symbol: string;
   name: string;
   category: 'crypto' | 'forex';

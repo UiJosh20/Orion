@@ -8,15 +8,28 @@ import { marketService, SupportedSymbol } from "../service/marketService";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M"];
 
-// Curated list of popular symbols matching backend format (no slashes)
-const POPULAR_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "EURUSD", "GBPUSD", "XRPUSDT"];
+// Curated list of popular symbols matching backend format
+const POPULAR_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "EURUSD", "GBPUSD", "USDJPY", "XRPUSDT"];
+
+// Fallback symbols if the database is currently empty or failing
+const DEFAULT_FALLBACK_SYMBOLS: SupportedSymbol[] = [
+  { id: "1", symbol: "BTCUSDT", name: "Bitcoin / Tether", category: "crypto", exchange: "Binance" },
+  { id: "2", symbol: "ETHUSDT", name: "Ethereum / Tether", category: "crypto", exchange: "Binance" },
+  { id: "3", symbol: "SOLUSDT", name: "Solana / Tether", category: "crypto", exchange: "Binance" },
+  { id: "4", symbol: "XRPUSDT", name: "XRP / Tether", category: "crypto", exchange: "Binance" },
+  { id: "5", symbol: "EURUSD", name: "Euro / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "6", symbol: "GBPUSD", name: "British Pound / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "7", symbol: "USDJPY", name: "US Dollar / Japanese Yen", category: "forex", exchange: "YahooFinance" },
+  { id: "8", symbol: "AUDUSD", name: "Australian Dollar / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "9", symbol: "USDCAD", name: "US Dollar / Canadian Dollar", category: "forex", exchange: "YahooFinance" },
+];
 
 export default function Header() {
   const { activeSymbol, activeInterval, setActiveSymbol, setActiveInterval } =
     useMarketStore();
   const { user } = useAuthStore();
   const { isConnected } = useSocket();
-  
+
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "crypto" | "forex">("all");
@@ -28,10 +41,31 @@ export default function Header() {
   useEffect(() => {
     const fetchSymbols = async () => {
       try {
-        const data:any = await marketService.getSupportedSymbols();
-        setSymbols(data.symbols);
+        const data: any = await marketService.getSupportedSymbols();
+
+        let extractedSymbols: SupportedSymbol[] = [];
+
+        if (Array.isArray(data)) {
+          extractedSymbols = data;
+        } else if (data?.symbols && Array.isArray(data.symbols)) {
+          extractedSymbols = data.symbols;
+        } else if (data?.crypto || data?.forex) {
+          // Backend returned { crypto: [...], forex: [...] }
+          extractedSymbols = [
+            ...(data.crypto || []),
+            ...(data.forex || []),
+          ];
+        }
+
+        // If DB query returned symbols, use them; otherwise use default fallbacks
+        if (extractedSymbols.length > 0) {
+          setSymbols(extractedSymbols);
+        } else {
+          setSymbols(DEFAULT_FALLBACK_SYMBOLS);
+        }
       } catch (error) {
-        console.error("Failed to fetch supported symbols:", error);
+        console.error("Failed to fetch supported symbols, using default list:", error);
+        setSymbols(DEFAULT_FALLBACK_SYMBOLS);
       } finally {
         setIsLoadingSymbols(false);
       }
@@ -43,11 +77,16 @@ export default function Header() {
   // Optimized filtering using useMemo
   const filteredSymbols = useMemo(() => {
     return symbols.filter((item) => {
+      // Normalize item category to lowercase
+      const itemCategory = (item.category || "").toLowerCase();
+      
       const matchesTab =
-        activeTab === "all" || item.category?.toLowerCase() === activeTab;
+        activeTab === "all" || itemCategory === activeTab;
+      
       const matchesSearch =
         item.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.name?.toLowerCase().includes(searchQuery.toLowerCase());
+
       return matchesTab && matchesSearch;
     });
   }, [symbols, activeTab, searchQuery]);
@@ -209,7 +248,9 @@ export default function Header() {
         {/* Network Status Indicator */}
         <div className="flex items-center gap-2">
           <span
-            className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`}
+            className={`w-2 h-2 rounded-full ${
+              isConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+            }`}
           />
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400 hidden md:inline">
             {isConnected ? "LIVE FEED" : "CONNECTING"}

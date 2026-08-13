@@ -37,7 +37,8 @@
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
     "technicalindicators": "^3.1.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "yahoo-finance2": "^4.0.2"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

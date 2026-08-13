@@ -10,7 +10,7 @@ export interface AIInsightResponse {
 }
 
 export const aiService = {
-  getInsight: async (symbol: string, interval: string): Promise<AIInsightResponse> => {
+  getInsight: async (symbol: string, interval: string, p0: { riskPercent: any; riskRewardRatio: any; }, ): Promise<AIInsightResponse> => {
     const response = await api.get(ENDPOINTS.AI.INSIGHT, {
       params: { symbol, interval },
     });
