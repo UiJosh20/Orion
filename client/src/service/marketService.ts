@@ -3,7 +3,7 @@ import { api } from "../libs/api/client";
 
 
 export interface SupportedSymbol {
-  id: number;
+  id: number | string;
   symbol: string;
   name: string;
   category: 'crypto' | 'forex';
@@ -12,7 +12,7 @@ export interface SupportedSymbol {
 
 export const marketService = {
   getSupportedSymbols: async (): Promise<SupportedSymbol[]> => {
-    const response = await api.get(ENDPOINTS.MARKET.SYMBOLS);
+    const response = await api.get(ENDPOINTS.MARKET.SYMBOLS, {params:{category:'crypto'}}); 
     return response.data;
   },
 

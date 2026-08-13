@@ -1,27 +1,23 @@
+// market.controller.ts
 import { Request, Response } from 'express';
 import { MarketMathService, MarketOrchestrator, MarketWatchList } from './market.service.js';
-
 
 export const getTechnicalAnalysis = async (req: Request, res: Response) => {
   try {
     const symbol = (req.query.symbol as string) || 'BTCUSDT';
     const interval = (req.query.interval as string) || '1h';
 
-    // Fetch data dynamically through the orchestrator (Redis + Auto-Background Tracking)
     const marketData = await MarketOrchestrator.getDynamicMarketData(symbol, interval);
-    // console.log(marketData, "marketData")
 
-    // Defensive check: ensure candles exist and form an array
     if (!marketData || !marketData.candles || !Array.isArray(marketData.candles) || marketData.candles.length === 0) {
       return res.status(404).json({
         status: 'error',
-        message: `No candle data could be retrieved for symbol: ${symbol}. Please check if the ticker symbol is valid or if external rate limits were reached.`,
+        message: `No candle data could be retrieved for symbol: ${symbol}.`,
       });
     }
 
     const closingPrices = marketData.candles.map((c: any) => c.close);
 
-    // Compute technical indicators
     const rsiValues = MarketMathService.calculateRSI(closingPrices) || [];
     const smaValues = MarketMathService.calculateSMA(closingPrices, 20) || [];
 
@@ -47,9 +43,6 @@ export const getTechnicalAnalysis = async (req: Request, res: Response) => {
   }
 };
 
-
-
-
 export const getSymbols = async (req: Request, res: Response) => {
   try {
     const { category } = req.query;
@@ -64,7 +57,7 @@ export const getSymbols = async (req: Request, res: Response) => {
 export const getWatchlist = async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    const watchlist = await MarketWatchList.getUserWatchlist(userId);
+    const watchlist = await MarketWatchList.getUserWatchlist(userId as any);
     return res.json({ watchlist });
   } catch (error) {
     console.error('Error in getWatchlist:', error);

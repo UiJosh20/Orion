@@ -1,17 +1,27 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useTransition, useMemo } from "react";
 import { useMarketStore } from "@/src/store/useMarketStore";
 import { useAuthStore } from "@/src/store/useAuthStore";
 import { useSocket } from "../providers/SocketProvider";
+import { marketService, SupportedSymbol } from "../service/marketService";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M"];
-const POPULAR_SYMBOLS = [
-  "BTC/USDT",
-  "ETH/USDT",
-  "SOL/USDT",
-  "EUR/USD",
-  "GBP/USD",
+
+// Curated list of popular symbols matching backend format
+const POPULAR_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "EURUSD", "GBPUSD", "USDJPY", "XRPUSDT"];
+
+// Fallback symbols if the database is currently empty or failing
+const DEFAULT_FALLBACK_SYMBOLS: SupportedSymbol[] = [
+  { id: "1", symbol: "BTCUSDT", name: "Bitcoin / Tether", category: "crypto", exchange: "Binance" },
+  { id: "2", symbol: "ETHUSDT", name: "Ethereum / Tether", category: "crypto", exchange: "Binance" },
+  { id: "3", symbol: "SOLUSDT", name: "Solana / Tether", category: "crypto", exchange: "Binance" },
+  { id: "4", symbol: "XRPUSDT", name: "XRP / Tether", category: "crypto", exchange: "Binance" },
+  { id: "5", symbol: "EURUSD", name: "Euro / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "6", symbol: "GBPUSD", name: "British Pound / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "7", symbol: "USDJPY", name: "US Dollar / Japanese Yen", category: "forex", exchange: "YahooFinance" },
+  { id: "8", symbol: "AUDUSD", name: "Australian Dollar / US Dollar", category: "forex", exchange: "YahooFinance" },
+  { id: "9", symbol: "USDCAD", name: "US Dollar / Canadian Dollar", category: "forex", exchange: "YahooFinance" },
 ];
 
 export default function Header() {
@@ -19,14 +29,87 @@ export default function Header() {
     useMarketStore();
   const { user } = useAuthStore();
   const { isConnected } = useSocket();
+
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<"all" | "crypto" | "forex">("all");
+  const [symbols, setSymbols] = useState<SupportedSymbol[]>([]);
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(true);
+  const [, startTransition] = useTransition();
 
-  const filteredSymbols = POPULAR_SYMBOLS.filter((s) =>
-    s.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  // Fetch supported symbols from backend on mount
+  useEffect(() => {
+    const fetchSymbols = async () => {
+      try {
+        const data: any = await marketService.getSupportedSymbols();
 
-  // Fallback to a deterministic random avatar based on user id/deviceUuid if avatar_url is null
+        let extractedSymbols: SupportedSymbol[] = [];
+
+        if (Array.isArray(data)) {
+          extractedSymbols = data;
+        } else if (data?.symbols && Array.isArray(data.symbols)) {
+          extractedSymbols = data.symbols;
+        } else if (data?.crypto || data?.forex) {
+          // Backend returned { crypto: [...], forex: [...] }
+          extractedSymbols = [
+            ...(data.crypto || []),
+            ...(data.forex || []),
+          ];
+        }
+
+        // If DB query returned symbols, use them; otherwise use default fallbacks
+        if (extractedSymbols.length > 0) {
+          setSymbols(extractedSymbols);
+        } else {
+          setSymbols(DEFAULT_FALLBACK_SYMBOLS);
+        }
+      } catch (error) {
+        console.error("Failed to fetch supported symbols, using default list:", error);
+        setSymbols(DEFAULT_FALLBACK_SYMBOLS);
+      } finally {
+        setIsLoadingSymbols(false);
+      }
+    };
+
+    fetchSymbols();
+  }, []);
+
+  // Optimized filtering using useMemo
+  const filteredSymbols = useMemo(() => {
+    return symbols.filter((item) => {
+      // Normalize item category to lowercase
+      const itemCategory = (item.category || "").toLowerCase();
+      
+      const matchesTab =
+        activeTab === "all" || itemCategory === activeTab;
+      
+      const matchesSearch =
+        item.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.name?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchesTab && matchesSearch;
+    });
+  }, [symbols, activeTab, searchQuery]);
+
+  // Optimized sorting using useMemo
+  const sortedSymbols = useMemo(() => {
+    return [...filteredSymbols].sort((a, b) => {
+      if (!searchQuery && activeTab === "all") {
+        const aPopular = POPULAR_SYMBOLS.includes(a.symbol) ? 0 : 1;
+        const bPopular = POPULAR_SYMBOLS.includes(b.symbol) ? 0 : 1;
+        return aPopular - bPopular;
+      }
+      return 0;
+    });
+  }, [filteredSymbols, searchQuery, activeTab]);
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    startTransition(() => {
+      setSearchQuery(value);
+    });
+  };
+
   const avatarSrc =
     user?.avatar_url ||
     `https://api.dicebear.com/7.x/identicon/svg?seed=${user?.id || "default-trader"}`;
@@ -58,31 +141,83 @@ export default function Header() {
           </button>
 
           {isDropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 w-56 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl z-50 p-2">
+            <div className="absolute top-full left-0 mt-1.5 w-[420px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl z-50 p-3.5">
+              {/* Search Bar */}
               <input
                 type="text"
-                placeholder="Search Pair (e.g. BTC/USDT)..."
+                placeholder="Search symbol or name (e.g. BTC, EUR)..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 mb-2 font-mono"
+                onChange={handleSearchChange}
+                className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 mb-3 font-mono text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
               />
-              <div className="max-h-48 overflow-y-auto space-y-1">
-                {filteredSymbols.map((sym) => (
+
+              {/* Category Filter Tabs */}
+              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-950 rounded-lg mb-2.5 text-xs font-mono">
+                {(["all", "crypto", "forex"] as const).map((tab) => (
                   <button
-                    key={sym}
-                    onClick={() => {
-                      setActiveSymbol(sym);
-                      setIsDropdownOpen(false);
-                    }}
-                    className={`w-full text-left px-2 py-1.5 text-xs font-mono rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors ${
-                      sym === activeSymbol
-                        ? "text-emerald-500 font-bold bg-emerald-500/10"
-                        : ""
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={`py-1.5 rounded-md capitalize font-medium transition-all ${
+                      activeTab === tab
+                        ? "bg-emerald-500 text-white font-bold shadow-sm"
+                        : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
                     }`}
                   >
-                    {sym}
+                    {tab}
                   </button>
                 ))}
+              </div>
+
+              {/* Symbols List */}
+              <div className="max-h-72 overflow-y-auto space-y-1 pr-0.5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                {isLoadingSymbols ? (
+                  <div className="text-center py-8 text-xs font-mono text-slate-500 animate-pulse">
+                    Loading market symbols...
+                  </div>
+                ) : sortedSymbols.length === 0 ? (
+                  <div className="text-center py-8 text-xs font-mono text-slate-500">
+                    No matching symbols found
+                  </div>
+                ) : (
+                  sortedSymbols.map((item) => {
+                    const isPopular = POPULAR_SYMBOLS.includes(item.symbol);
+                    const isSelected = item.symbol === activeSymbol;
+
+                    return (
+                      <button
+                        key={item.id || item.symbol}
+                        onClick={() => {
+                          setActiveSymbol(item.symbol);
+                          setIsDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-3.5 py-2.5 text-xs font-mono rounded-lg transition-colors ${
+                          isSelected
+                            ? "text-emerald-500 font-bold bg-emerald-500/10 border border-emerald-500/30"
+                            : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <div className="flex flex-col items-start truncate pr-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm">{item.symbol}</span>
+                            {isPopular && !searchQuery && activeTab === "all" && (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-500 rounded font-normal">
+                                Popular
+                              </span>
+                            )}
+                          </div>
+                          {item.name && (
+                            <span className="text-[11px] text-slate-400 truncate max-w-[280px]">
+                              {item.name}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] uppercase px-2 py-1 rounded bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                          {item.category || item.exchange || "Asset"}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
               </div>
             </div>
           )}
@@ -113,7 +248,9 @@ export default function Header() {
         {/* Network Status Indicator */}
         <div className="flex items-center gap-2">
           <span
-            className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`}
+            className={`w-2 h-2 rounded-full ${
+              isConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+            }`}
           />
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400 hidden md:inline">
             {isConnected ? "LIVE FEED" : "CONNECTING"}

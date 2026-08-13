@@ -58,7 +58,7 @@ export default function WatchlistAlertModal({
       // 1. Add to Watchlist if checked
       if (addToWatchlistToo) {
         if (customInput) addCustomSymbol(customInput);
-        await watchlistService.addToWatchlist(targetSymbol);
+        await watchlistService.addToWatchlist(userId, targetSymbol);
       }
 
       // 2. Create Alert

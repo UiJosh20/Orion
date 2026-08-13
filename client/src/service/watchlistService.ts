@@ -24,8 +24,8 @@ export const watchlistService = {
   /**
    * Add a symbol to the current active session's watchlist
    */
-  addToWatchlist: async (symbol: string): Promise<WatchlistItem> => {
-    const response = await api.post(ENDPOINTS.WATCHLIST.ADD, { symbol });
+  addToWatchlist: async (userId: string, symbol: string): Promise<WatchlistItem> => {
+    const response = await api.post(ENDPOINTS.WATCHLIST.ADD, { userId, symbol });
     return response.data;
   },
 
