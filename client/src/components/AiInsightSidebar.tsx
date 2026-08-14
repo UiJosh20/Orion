@@ -1,19 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Activity, TrendingUp, X, Sliders, ShieldOff } from "lucide-react";
 import { useMarketStore } from "@/src/store/useMarketStore";
 import { useAuthStore } from "@/src/store/useAuthStore";
-import { aiService } from "../service/aiservice";
+import { useSocket } from "../providers/SocketProvider";
 import { alertService } from "../service/alertService";
-
-const THINKING_STEPS = [
-  "Initializing high-precision telemetry...",
-  "Running strict risk-reward filter models...",
-  "Analyzing order book liquidity & market structure...",
-  "Verifying multi-timeframe indicator confluence...",
-  "Synthesizing zero-loss probability setup...",
-];
+import { calculateProfitBreakdown } from "../libs/tradingMath";
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH";
 
@@ -24,22 +17,26 @@ interface AiTradePosition {
   target: number;
 }
 
-interface AiInsightPayload {
-  marketStatus?: string;
-  analysis?: string;
-  conditionalSetup?: string;
-  keyLevel?: number;
-  confidence?: Confidence;
-  tradePosition: AiTradePosition | null;
+interface InsightPayload {
+  symbol: string;
+  interval: string;
+  latestPrice?: number;
+  indicators?: { rsi: number | null; sma: number | null };
+  aiInsight: {
+    marketStatus?: string;
+    analysis?: string;
+    conditionalSetup?: string;
+    keyLevel?: number;
+    confidence?: Confidence;
+    tradePosition: AiTradePosition | null;
+  };
 }
 
-// Helper to remove markdown bolding (**)
 const cleanText = (text: string) => {
   if (!text) return "";
   return text.replace(/\*\*(.*?)\*\*/g, "$1");
 };
 
-// Helper to format prices
 const formatPrice = (val: any) => {
   const num = Number(val);
   if (isNaN(num)) return val;
@@ -49,42 +46,19 @@ const formatPrice = (val: any) => {
   });
 };
 
-// Parses the backend's structured JSON response into a typed payload.
-// Returns null if the response can't be parsed — callers must treat that
-// the same as "no setup", not fall back to a synthesized trade.
-function parseInsightPayload(aiInsight: any): AiInsightPayload | null {
-  if (!aiInsight) return null;
-
-  let parsed = aiInsight;
-  if (typeof aiInsight === "string") {
-    try {
-      const cleanedJson = aiInsight
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
-      parsed = JSON.parse(cleanedJson);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  return {
-    marketStatus: parsed.marketStatus,
-    analysis: parsed.analysis,
-    conditionalSetup: parsed.conditionalSetup,
-    keyLevel: parsed.keyLevel,
-    confidence: parsed.confidence,
-    tradePosition: parsed.tradePosition ?? null,
-  };
-}
-
 const CONFIDENCE_STYLES: Record<Confidence, string> = {
   HIGH: "bg-emerald-500/10 text-emerald-500 border-emerald-500/30",
   MEDIUM: "bg-amber-500/10 text-amber-500 border-amber-500/30",
   LOW: "bg-slate-500/10 text-slate-400 border-slate-500/30",
 };
+
+const THINKING_STEPS = [
+  "Initializing high-precision telemetry...",
+  "Running strict risk-reward filter models...",
+  "Analyzing order book liquidity & market structure...",
+  "Verifying multi-timeframe indicator confluence...",
+  "Checking discount/premium structure...",
+];
 
 export default function AiInsightsSidebar() {
   const {
@@ -96,23 +70,33 @@ export default function AiInsightsSidebar() {
     setRiskConfig,
     accountBalance,
     setAccountBalance,
-  }: any = useMarketStore();
+  } = useMarketStore();
 
   const userId = useAuthStore((state) => state.user?.id);
+  const { socket, isConnected } = useSocket();
 
-  const [insight, setInsight] = useState<any | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [insight, setInsight] = useState<InsightPayload | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
 
-  // Modal State Management for Alert Flow
   const [modalStep, setModalStep] = useState<
     "closed" | "choose_ai_or_custom" | "confirm_ai_target" | "success"
   >("closed");
   const [isSubmittingAlert, setIsSubmittingAlert] = useState(false);
   const [alertSuccessMsg, setAlertSuccessMsg] = useState("");
 
-  // Progressive loading timer
+  // Tracks the exact subscription params currently active on the socket,
+  // so we can send the matching unsubscribe when params change or unmount.
+  const activeSubRef = useRef<{
+    symbol: string;
+    interval: string;
+    riskPercent: number;
+    riskRewardRatio: number;
+  } | null>(null);
+
+  // Progressive loading step cycler — purely cosmetic, runs while waiting
+  // for the first insight_update after a fresh subscribe.
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isLoading) {
@@ -126,58 +110,95 @@ export default function AiInsightsSidebar() {
     return () => clearInterval(interval);
   }, [isLoading]);
 
-  // Fetch insight. riskPercent/riskRewardRatio are passed through to the
-  // backend so any tradePosition it returns already reflects the user's
-  // chosen risk config — the frontend must not recompute its own numbers.
-  const fetchInsight = useCallback(async () => {
-    if (!activeSymbol) return;
+  // Push-based insight subscription. Replaces the old REST fetch entirely —
+  // no request is sent from here except the initial "subscribe_insight"
+  // socket event; all data after that arrives via insight_update pushes.
+  useEffect(() => {
+    if (!socket || !isConnected || !activeSymbol) return;
 
     setIsLoading(true);
     setError("");
     setInsight(null);
     setModalStep("closed");
 
-    try {
-      const response = await aiService.getInsight(
-        activeSymbol,
-        activeInterval,
-        { riskPercent, riskRewardRatio },
-      );
-      setInsight(response);
-    } catch (err: any) {
-      console.error("Failed to fetch AI insight:", err);
-      setError(
-        err?.response?.data?.error ||
-          err.message ||
-          "Failed to generate market insights.",
-      );
-    } finally {
-      setIsLoading(false);
+    const params = {
+      symbol: activeSymbol,
+      interval: activeInterval,
+      riskPercent,
+      riskRewardRatio,
+    };
+
+    // Unsubscribe from whatever we were previously watching
+    if (activeSubRef.current) {
+      socket.emit("unsubscribe_insight", activeSubRef.current);
     }
-  }, [activeSymbol, activeInterval, riskPercent, riskRewardRatio]);
 
-  useEffect(() => {
-    fetchInsight();
-  }, [fetchInsight]);
+    socket.emit("subscribe_insight", params);
+    activeSubRef.current = params;
 
-  const payload = insight?.aiInsight ? parseInsightPayload(insight.aiInsight) : null;
+    const handleInsightUpdate = (payload: InsightPayload) => {
+      // Guard against stale pushes from a room we've since left
+      // (e.g. rapid symbol switching)
+      if (
+        payload.symbol !== activeSymbol ||
+        payload.interval !== activeInterval
+      )
+        return;
+      setInsight(payload);
+      setIsLoading(false);
+      setError("");
+    };
+
+    const handleInsightError = (err: { symbol: string; message: string }) => {
+      if (err.symbol !== activeSymbol) return;
+      setError(err.message || "Failed to generate market insight.");
+      setIsLoading(false);
+    };
+
+    socket.on("insight_update", handleInsightUpdate);
+    socket.on("insight_error", handleInsightError);
+
+    return () => {
+      socket.off("insight_update", handleInsightUpdate);
+      socket.off("insight_error", handleInsightError);
+      if (activeSubRef.current) {
+        socket.emit("unsubscribe_insight", activeSubRef.current);
+        activeSubRef.current = null;
+      }
+    };
+  }, [
+    socket,
+    isConnected,
+    activeSymbol,
+    activeInterval,
+    riskPercent,
+    riskRewardRatio,
+  ]);
+
+  const payload = insight?.aiInsight ?? null;
 
   const sections = payload
-    ? [
-        payload.marketStatus && { title: "Market Status & Bias", body: cleanText(payload.marketStatus) },
-        payload.analysis && { title: "Strict Technical Confluence", body: cleanText(payload.analysis) },
-        payload.conditionalSetup && { title: "Setup Requirement", body: cleanText(payload.conditionalSetup) },
-      ].filter(Boolean) as { title: string; body: string }[]
+    ? ([
+        payload.marketStatus && {
+          title: "Market Status & Bias",
+          body: cleanText(payload.marketStatus),
+        },
+        payload.analysis && {
+          title: "Strict Technical Confluence",
+          body: cleanText(payload.analysis),
+        },
+        payload.conditionalSetup && {
+          title: "Setup Requirement",
+          body: cleanText(payload.conditionalSetup),
+        },
+      ].filter(Boolean) as { title: string; body: string }[])
     : [];
 
   const confidence = payload?.confidence;
   const tradePosition = payload?.tradePosition ?? null;
 
-  // The trade panel (stop-loss, target, position sizing, alert) only renders
-  // when the AI actually returned a setup AND didn't flag it as low
-  // conviction. This is the fix: previously the UI always synthesized a
-  // stop/target from a hardcoded fallback price regardless of what — or
-  // whether — the AI recommended anything.
+  // Trade panel only renders when the backend actually returned (and
+  // validated) a setup — never synthesized locally.
   const hasActionableTrade = !!tradePosition && confidence !== "LOW";
 
   const riskAmountUSD = tradePosition
@@ -187,6 +208,17 @@ export default function AiInsightsSidebar() {
     ? Math.abs(tradePosition.entry - tradePosition.stopLoss)
     : 0;
   const positionSize = stopDistance > 0 ? riskAmountUSD / stopDistance : 0;
+
+  const profitBreakdown =
+    tradePosition && positionSize > 0
+      ? calculateProfitBreakdown(
+          activeSymbol,
+          tradePosition.entry,
+          tradePosition.stopLoss,
+          tradePosition.target,
+          positionSize,
+        )
+      : null;
 
   const handleConfirmAiAlertCreation = async () => {
     if (!tradePosition) return;
@@ -214,9 +246,7 @@ export default function AiInsightsSidebar() {
         `Alert successfully created for ${activeSymbol} at $${formatPrice(tradePosition.target)}!`,
       );
       setModalStep("success");
-      setTimeout(() => {
-        setModalStep("closed");
-      }, 3000);
+      setTimeout(() => setModalStep("closed"), 3000);
     } catch (err: any) {
       console.error("Failed to create alert via endpoint:", err);
       setModalStep("closed");
@@ -242,8 +272,8 @@ export default function AiInsightsSidebar() {
   };
 
   return (
-    <aside className="w-full lg:w-96 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative">
-      {/* Sidebar Header */}
+    <aside className="w-full h-full bg-white dark:bg-slate-900 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative shadcn-scrollbar">
+      {" "}
       <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800 mb-4 shrink-0">
         <div className="text-slate-900 dark:text-slate-100 font-bold tracking-wide">
           Orion Intelligence (Risk Guard)
@@ -252,10 +282,12 @@ export default function AiInsightsSidebar() {
           {activeSymbol} ({activeInterval})
         </div>
       </div>
-
-      {/* Main Content Area */}
       <div className="flex-1 flex flex-col space-y-4">
-        {isLoading ? (
+        {!isConnected ? (
+          <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 text-[11px]">
+            Connecting to live feed...
+          </div>
+        ) : isLoading ? (
           <div className="p-6 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3 mt-2">
             <div className="flex items-center justify-between text-[10px] text-slate-500">
               <span className="text-blue-600 dark:text-blue-400 font-bold">
@@ -267,7 +299,8 @@ export default function AiInsightsSidebar() {
               {THINKING_STEPS[currentStepIndex]}
             </p>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              Filtering false breakouts and checking discount/premium structure...
+              Filtering false breakouts and checking discount/premium
+              structure...
             </p>
           </div>
         ) : error ? (
@@ -279,8 +312,7 @@ export default function AiInsightsSidebar() {
           </div>
         ) : payload ? (
           <div className="space-y-4 pb-6">
-            {/* Technical Indicators Summary Bar */}
-            {insight.indicators && (
+            {insight?.indicators && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
                   <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
@@ -288,7 +320,9 @@ export default function AiInsightsSidebar() {
                     RSI
                   </span>
                   <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
-                    {insight.indicators.rsi}
+                    {insight.indicators.rsi != null
+                      ? insight.indicators.rsi.toFixed(1)
+                      : "N/A"}
                   </span>
                 </div>
                 <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
@@ -297,14 +331,14 @@ export default function AiInsightsSidebar() {
                     SMA
                   </span>
                   <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
-                    {formatPrice(insight.indicators.sma)}
+                    {insight.indicators.sma != null
+                      ? formatPrice(insight.indicators.sma)
+                      : "N/A"}
                   </span>
                 </div>
               </div>
             )}
 
-            {/* Confidence badge — always shown so the user sees the AI's
-                actual conviction, even (especially) when there's no trade */}
             {confidence && (
               <div
                 className={`px-3 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-between ${CONFIDENCE_STYLES[confidence]}`}
@@ -316,9 +350,6 @@ export default function AiInsightsSidebar() {
 
             {hasActionableTrade && tradePosition ? (
               <>
-                {/* Risk Management Configuration Panel — numbers come from
-                    the AI's own tradePosition, not a locally-synthesized
-                    fallback */}
                 <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
                   <div className="flex items-center justify-between text-slate-900 dark:text-slate-100 font-bold">
                     <span className="flex items-center gap-1.5 text-xs">
@@ -363,7 +394,8 @@ export default function AiInsightsSidebar() {
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-500">
-                    Changing these refetches the AI's setup at the new risk config.
+                    Changing these resubscribes to a fresh setup at the new risk
+                    config.
                   </p>
                   <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
                     <div>
@@ -387,7 +419,6 @@ export default function AiInsightsSidebar() {
                   </div>
                 </div>
 
-                {/* Account Balance & Position Sizing */}
                 <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
                   <div className="text-slate-900 dark:text-slate-100 font-bold text-xs">
                     Account & Position Size
@@ -400,36 +431,74 @@ export default function AiInsightsSidebar() {
                       type="number"
                       min={0}
                       value={accountBalance || ""}
-                      onChange={(e) => setAccountBalance(Number(e.target.value))}
+                      onChange={(e) =>
+                        setAccountBalance(Number(e.target.value))
+                      }
                       placeholder="e.g. 5000"
                       className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
                     />
                   </div>
                   {accountBalance > 0 ? (
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
-                      <div>
-                        <span className="text-slate-500">Risking:</span>{" "}
-                        <strong className="text-rose-500">
-                          ${formatPrice(riskAmountUSD)}
-                        </strong>
-                        <span className="text-slate-400"> ({riskPercent}%)</span>
+                    <>
+                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                        <div>
+                          <span className="text-slate-500">Risking:</span>{" "}
+                          <strong className="text-rose-500">
+                            ${formatPrice(riskAmountUSD)}
+                          </strong>
+                          <span className="text-slate-400">
+                            {" "}
+                            ({riskPercent}%)
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Position size:</span>{" "}
+                          <strong className="text-emerald-500">
+                            {positionSize.toFixed(4)} units
+                          </strong>
+                        </div>
                       </div>
-                      <div>
-                        <span className="text-slate-500">Position size:</span>{" "}
-                        <strong className="text-emerald-500">
-                          {positionSize.toFixed(4)} units
-                        </strong>
-                      </div>
-                      {riskPercent > 2 && (
-                        <div className="col-span-2 text-[10px] text-amber-500 pt-1">
-                          Risking more than 2% per trade compounds drawdown fast —
-                          most professional traders cap this at 1–2%.
+
+                      {profitBreakdown && (
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                          <div>
+                            <span className="text-slate-500">If TP hits:</span>{" "}
+                            <strong className="text-emerald-500">
+                              +${formatPrice(profitBreakdown.profitUSD)}
+                            </strong>
+                            {profitBreakdown.profitPips !== null && (
+                              <span className="text-slate-400">
+                                {" "}
+                                ({profitBreakdown.profitPips} pips)
+                              </span>
+                            )}
+                          </div>
+                          <div>
+                            <span className="text-slate-500">If SL hits:</span>{" "}
+                            <strong className="text-rose-500">
+                              -${formatPrice(profitBreakdown.lossUSD)}
+                            </strong>
+                            {profitBreakdown.lossPips !== null && (
+                              <span className="text-slate-400">
+                                {" "}
+                                ({profitBreakdown.lossPips} pips)
+                              </span>
+                            )}
+                          </div>
                         </div>
                       )}
-                    </div>
+
+                      {riskPercent > 2 && (
+                        <div className="text-[10px] text-amber-500 pt-1">
+                          Risking more than 2% per trade compounds drawdown fast
+                          — most professional traders cap this at 1–2%.
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <p className="text-[10px] text-slate-400">
-                      Enter your balance to see position size and dollar risk.
+                      Enter your balance to see position size, dollar risk, and
+                      TP/SL outcomes.
                     </p>
                   )}
                 </div>
@@ -450,7 +519,6 @@ export default function AiInsightsSidebar() {
               </div>
             )}
 
-            {/* Well-Spaced Report Sections */}
             <div className="space-y-3">
               {sections.map((sec, idx) => (
                 <div
@@ -467,7 +535,6 @@ export default function AiInsightsSidebar() {
               ))}
             </div>
 
-            {/* Target Alert Action Button — only when there's a real trade */}
             {hasActionableTrade && tradePosition && (
               <div className="pt-2">
                 <button
@@ -493,8 +560,6 @@ export default function AiInsightsSidebar() {
           </div>
         )}
       </div>
-
-      {/* Alert Flow Modal Overlay */}
       {modalStep !== "closed" && tradePosition && (
         <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">

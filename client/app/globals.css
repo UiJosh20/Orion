@@ -55,3 +55,31 @@ body {
 .smooth-transition {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+@layer utilities {
+  /* Shadcn-styled custom scrollbar */
+  .shadcn-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .shadcn-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .shadcn-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.2); /* slate-400 / 20% */
+    border-radius: 9999px;
+    transition: background 0.15s ease;
+  }
+
+  .shadcn-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.4); /* slate-400 / 40% */
+  }
+
+  /* Firefox support */
+  .shadcn-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+  }
+}

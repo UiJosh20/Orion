@@ -22,7 +22,7 @@ app.set('trust proxy', 1);
 // 1. CORS (Must come before rate-limiter so OPTIONS preflights pass through)
 app.use(
   cors({
-    origin: ENV.CLIENT_URL || 'http://localhost:3000',
+    origin: ENV.CLIENT_URL && 'http://localhost:3000',
     // origin: 'http://localhost:3000',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
