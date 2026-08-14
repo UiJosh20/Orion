@@ -30,7 +30,7 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
           config.headers['X-Device-UUID'] = deviceUuid;
         }
 
-        const token = localStorage.getItem('access_token');
+        const token = localStorage.getItem('orion_access_token');
         if (token && config.headers) {
           config.headers.Authorization = `Bearer ${token}`;
         }
@@ -49,7 +49,7 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
       if (error.response?.status === 401 && !originalRequest._retry) {
         if (originalRequest.url === ENDPOINTS.AUTH.REFRESH) {
           // If refresh itself fails, clear session
-          localStorage.removeItem('access_token');
+          localStorage.removeItem('orion_access_token');
           return Promise.reject(error);
         }
 
@@ -74,7 +74,7 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
           const { data } = await apiClient.post(ENDPOINTS.AUTH.REFRESH);
           const newAccessToken = data.accessToken;
 
-          localStorage.setItem('access_token', newAccessToken);
+          localStorage.setItem('orion_access_token', newAccessToken);
 
           apiClient.defaults.headers.common['Authorization'] = `Bearer ${newAccessToken}`;
 
@@ -86,7 +86,7 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
           return apiClient(originalRequest);
         } catch (refreshError) {
           processQueue(refreshError, null);
-          localStorage.removeItem('access_token');
+          localStorage.removeItem('orion_access_token');
           return Promise.reject(refreshError);
         } finally {
           isRefreshing = false;

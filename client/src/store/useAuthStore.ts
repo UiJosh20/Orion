@@ -8,6 +8,7 @@ interface UserProfile {
   email: string;
   name: string;
   avatar_url?: string;
+  created_at?: string;
 }
 
 interface AuthState {
@@ -35,34 +36,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       // 1. Register/sync device session in the database
       await api.post(
-        ENDPOINTS.SESSION.DEVICE, 
+        ENDPOINTS.SESSION.DEVICE,
         { deviceUuid },
         { headers: { 'x-device-uuid': deviceUuid } }
       );
 
-      // 2. Authenticate the device session to receive access & refresh tokens
-      const deviceAuthRes = await api.post(
-        ENDPOINTS.AUTH.DEVICE, 
+      // 2. Authenticate device session (Backend sets guest HttpOnly cookie)
+      await api.post(
+        ENDPOINTS.AUTH.DEVICE,
         {},
         { headers: { 'x-device-uuid': deviceUuid } }
       );
 
-      if (deviceAuthRes.data?.accessToken) {
-        localStorage.setItem('access_token', deviceAuthRes.data.accessToken);
-      }
-
-      // 3. Verify user/session status via /auth/me
-      const token = localStorage.getItem('access_token');
-      if (token) {
-        try {
-          const res = await api.get(ENDPOINTS.AUTH.ME);
-          if (res.data?.user) {
-            set({ user: res.data.user, isAuthenticated: true });
-            return;
-          }
-        } catch {
-          // Fallback if token points to a guest device rather than a Google user
-        }
+      // 3. Retrieve user status via /auth/me (Cookies auto-sent by browser)
+      const res = await api.get(ENDPOINTS.AUTH.ME);
+      if (res.data?.user) {
+        set({ user: res.data.user, isAuthenticated: true });
+        return;
       }
 
       set({ user: null, isAuthenticated: false });
@@ -77,13 +67,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   loginWithGoogle: async (idToken: string) => {
     try {
       const { deviceUuid } = get();
-      // Pass deviceUuid so backend migrates guest watchlists/alerts to the Google user
-      const res = await api.post(ENDPOINTS.AUTH.GOOGLE, { idToken }, {
-        headers: { 'x-device-uuid': deviceUuid }
-      });
-      const { user, accessToken } = res.data;
+      // Server validates idToken, sets Google session HttpOnly cookies, and migrates guest data
+      const res = await api.post(
+        ENDPOINTS.AUTH.GOOGLE,
+        { idToken },
+        { headers: { 'x-device-uuid': deviceUuid } }
+      );
 
-      localStorage.setItem('access_token', accessToken);
+      const { user } = res.data;
       set({ user, isAuthenticated: true });
     } catch (error) {
       console.error('Google login failed:', error);
@@ -93,14 +84,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     try {
+      // Calls endpoint where backend clears the HttpOnly auth cookies (Set-Cookie: max-age=0)
       await api.post(ENDPOINTS.AUTH.LOGOUT);
     } catch {
-      // Ignore logout errors
+      // Ignore logout API errors
     } finally {
-      localStorage.removeItem('access_token');
       set({ user: null, isAuthenticated: false });
 
-      // Re-initialize device session so guest token is re-established immediately
+      // Re-initialize device session so a fresh guest device cookie is re-established immediately
       await get().initializeSession();
     }
   },
