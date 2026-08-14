@@ -19,18 +19,19 @@ export const metadata: Metadata = {
   description: "AI-powered forex trading assistant",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col bg-slate-950 text-slate-100">
         <Providers>
+          <TriggeredAlertBanner />
           {children}
         </Providers>
-        </body>
+      </body>
     </html>
   );
 }

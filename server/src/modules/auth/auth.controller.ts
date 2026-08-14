@@ -20,30 +20,30 @@ export class AuthController {
     });
   }
 
-  async googleAuth(req: Request, res: Response) {
-    try {
-      const { idToken } = req.body;
-      const deviceUuid = req.headers['x-device-uuid'] as string;
+async googleAuth(req: Request, res: Response) {
+  try {
+    const { idToken } = req.body;
+    const deviceUuid = req.headers['x-device-uuid'] as string;
 
-      if (!idToken) {
-        return res.status(400).json({ error: 'idToken is required' });
-      }
-
-      const { user, accessToken, refreshToken } = await authService.authenticateGoogleUser(idToken, deviceUuid);
-
-      // Attach refresh token as HttpOnly Cookie
-      this.setRefreshCookie(res, refreshToken);
-
-      return res.status(200).json({
-        message: 'Authenticated successfully',
-        accessToken,
-        user,
-      });
-    } catch (error: any) {
-      return res.status(401).json({ error: error.message || 'Authentication failed' });
+    if (!idToken) {
+      return res.status(400).json({ error: 'idToken is required' });
     }
-  }
 
+    const { user, accessToken, refreshToken } = await authService.authenticateGoogleUser(idToken, deviceUuid);
+
+    this.setRefreshCookie(res, refreshToken);
+
+    return res.status(200).json({
+      message: 'Authenticated successfully',
+      accessToken,
+      user,
+    });
+  } catch (error: any) {
+    // 👈 Log the exact error to terminal so you can see PostgreSQL or Token Verification errors
+    console.error('[Google Auth Error]:', error);
+    return res.status(401).json({ error: error.message || 'Authentication failed' });
+  }
+}
   async refreshToken(req: Request, res: Response) {
     try {
       const incomingRefreshToken = req.cookies?.[COOKIE_NAME] || req.body?.refreshToken;

@@ -11,68 +11,82 @@ const ACCESS_TOKEN_EXPIRY = "15m"; // 15 minutes
 const REFRESH_TOKEN_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 days in seconds
 
 export class AuthService {
-  /**
-   * 1a. Google OAuth Authentication & Migration
-   */
-  async authenticateGoogleUser(idToken: string, deviceUuid?: string) {
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: ENV.GOOGLE_CLIENT_ID,
-    });
+ /**
+ * 1a. Google OAuth Authentication & Migration
+ */
+async authenticateGoogleUser(idToken: string, deviceUuid?: string) {
+  const ticket = await googleClient.verifyIdToken({
+    idToken,
+    audience: ENV.GOOGLE_CLIENT_ID,
+  });
 
-    const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      throw new Error("Invalid Google token payload");
-    }
-
-    const { sub: googleId, email, name, picture: avatarUrl } = payload;
-    const dbClient = await pgPool.connect();
-
-    try {
-      await dbClient.query("BEGIN");
-
-      // Upsert User
-      const userUpsertQuery = `
-        INSERT INTO users (email, google_id, name, avatar_url, updated_at)
-        VALUES ($1, $2, $3, $4, NOW())
-        ON CONFLICT (google_id)
-        DO UPDATE SET name = EXCLUDED.name, avatar_url = EXCLUDED.avatar_url, updated_at = NOW()
-        RETURNING id, email, name, avatar_url, created_at;
-      `;
-      const { rows } = await dbClient.query(userUpsertQuery, [
-        email,
-        googleId,
-        name,
-        avatarUrl,
-      ]);
-      const user = rows[0];
-
-      // Migrate Guest Data if deviceUuid exists
-      if (deviceUuid) {
-        await dbClient.query(
-          `UPDATE user_watchlist SET user_id = $1 WHERE user_id = $2 ON CONFLICT (user_id, symbol) DO NOTHING;`,
-          [user.id, deviceUuid],
-        );
-        await dbClient.query(
-          `UPDATE user_alerts SET user_id = $1 WHERE user_id = $2;`,
-          [user.id, deviceUuid],
-        );
-      }
-
-      await dbClient.query("COMMIT");
-
-      // Generate Tokens
-      const tokens = await this.issueTokenPair(user.id, user.email);
-
-      return { user, ...tokens };
-    } catch (error) {
-      await dbClient.query("ROLLBACK");
-      throw error;
-    } finally {
-      dbClient.release();
-    }
+  const payload = ticket.getPayload();
+  if (!payload || !payload.email) {
+    throw new Error("Invalid Google token payload");
   }
 
+  const { sub: googleId, email, name, picture: avatarUrl } = payload;
+  const dbClient = await pgPool.connect();
+
+  try {
+    await dbClient.query("BEGIN");
+
+    // 1. Upsert User
+    const userUpsertQuery = `
+      INSERT INTO users (email, google_id, name, avatar_url, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (google_id)
+      DO UPDATE SET name = EXCLUDED.name, avatar_url = EXCLUDED.avatar_url, updated_at = NOW()
+      RETURNING id, email, name, avatar_url, created_at;
+    `;
+    const { rows } = await dbClient.query(userUpsertQuery, [
+      email,
+      googleId,
+      name,
+      avatarUrl,
+    ]);
+    const user = rows[0];
+
+    // 2. Migrate Guest Data safely if deviceUuid exists
+    if (deviceUuid) {
+      // Step A: Delete guest watchlist items that the user already has saved
+      await dbClient.query(
+        `
+        DELETE FROM user_watchlist
+        WHERE user_id = $2
+          AND symbol IN (
+            SELECT symbol FROM user_watchlist WHERE user_id = $1
+          );
+        `,
+        [user.id, deviceUuid]
+      );
+
+      // Step B: Re-assign all remaining unique guest watchlist items to the user
+      await dbClient.query(
+        `UPDATE user_watchlist SET user_id = $1 WHERE user_id = $2;`,
+        [user.id, deviceUuid]
+      );
+
+      // Step C: Re-assign guest alerts to the user
+      await dbClient.query(
+        `UPDATE user_alerts SET user_id = $1 WHERE user_id = $2;`,
+        [user.id, deviceUuid]
+      );
+    }
+
+    await dbClient.query("COMMIT");
+
+    // 3. Generate Tokens
+    const tokens = await this.issueTokenPair(user.id, user.email);
+
+    return { user, ...tokens };
+  } catch (error) {
+    await dbClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    dbClient.release();
+  }
+}
   /**
    * 1b. Device Session Authentication (Guest Tokens with Random Names)
    */
