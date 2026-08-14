@@ -524,6 +524,96 @@ export class MarketService {
   }
 
   /**
+ * Fetches candles strictly older than `beforeTimeSeconds` — used for
+ * infinite-scroll-style history loading when the user pans left past
+ * the start of what's currently loaded. Binance-only for now since it's
+ * the only provider whose klines endpoint supports `endTime` pagination
+ * cleanly; other providers return an empty array rather than duplicate
+ * or wrong data.
+ */
+public static async getOlderKlines(
+  symbol: string,
+  interval: string,
+  beforeTimeSeconds: number,
+  limit: number = 200
+): Promise<Candle[]> {
+  const formattedSymbol = symbol.trim().toUpperCase();
+  try {
+    if (this.isCryptoSymbol(formattedSymbol)) {
+      return await this.fetchBinanceCryptoBefore(formattedSymbol, interval, beforeTimeSeconds, limit);
+    }
+    console.warn(`[MarketService] Older-history pagination not yet supported for non-crypto symbol ${formattedSymbol}`);
+    return [];
+  } catch (error: any) {
+    console.error(`[MarketService] Failed to fetch older klines for ${formattedSymbol}:`, error.message);
+    return [];
+  }
+}
+
+private static async fetchBinanceCryptoBefore(
+  symbol: string,
+  interval: string,
+  beforeTimeSeconds: number,
+  limit: number
+): Promise<Candle[]> {
+  const intervalMap: Record<string, string> = {
+    '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
+    '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h',
+    '8h': '8h', '12h': '12h', '1d': '1d', '3d': '3d',
+    '1w': '1w', '1M': '1M'
+  };
+  const binanceInterval = intervalMap[interval] || '1h';
+
+  let binanceSymbol = symbol.replace('/', '').toUpperCase();
+  const hasQuote = ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH'].some((q) => binanceSymbol.endsWith(q));
+  if (!hasQuote) binanceSymbol = `${binanceSymbol}USDT`;
+
+  const response = await axios.get('https://api.binance.com/api/v3/klines', {
+    params: {
+      symbol: binanceSymbol,
+      interval: binanceInterval,
+      endTime: beforeTimeSeconds * 1000 - 1, // exclusive upper bound, in ms
+      limit: Math.min(limit, 500),
+    },
+    timeout: 5000,
+    headers: { 'Accept-Encoding': 'gzip' },
+  });
+
+  if (!Array.isArray(response.data)) {
+    throw new Error('Invalid response from Binance');
+  }
+
+  return response.data.map((kline: any[]) => ({
+    datetime: new Date(kline[0]).toISOString(),
+    open: parseFloat(kline[1]),
+    high: parseFloat(kline[2]),
+    low: parseFloat(kline[3]),
+    close: parseFloat(kline[4]),
+    volume: parseFloat(kline[5]),
+  }));
+}
+
+/**
+ * Same shape as getHistoricalKlines but for the "load more history"
+ * pagination path.
+ */
+public static async getOlderHistoricalKlines(
+  symbol: string,
+  interval: string,
+  beforeTimeSeconds: number,
+  limit: number = 200
+): Promise<any[]> {
+  const candles = await this.getOlderKlines(symbol, interval, beforeTimeSeconds, limit);
+  return candles.map((c: Candle) => ({
+    time: Math.floor(new Date(c.datetime).getTime() / 1000),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+  }));
+}
+
+  /**
    * Clear cache
    */
   public static clearCache(): void {
@@ -537,24 +627,59 @@ export class MarketService {
 // ============================================
 
 export class MarketMathService {
-  public static calculateRSI(
-    closingPrice: number[],
-    period: number = 14
-  ): number[] {
-    if (!closingPrice || closingPrice.length < period) {
-      return [];
-    }
+  public static calculateRSI(closingPrice: number[], period: number = 14): number[] {
+    if (!closingPrice || closingPrice.length < period) return [];
     return RSI.calculate({ values: closingPrice, period });
   }
 
-  public static calculateSMA(
-    closingPrice: number[],
-    period: number = 14
-  ): number[] {
-    if (!closingPrice || closingPrice.length < period) {
-      return [];
-    }
+  public static calculateSMA(closingPrice: number[], period: number = 14): number[] {
+    if (!closingPrice || closingPrice.length < period) return [];
     return SMA.calculate({ values: closingPrice, period });
+  }
+
+  /**
+   * Average True Range — used to give the AI a real volatility unit
+   * instead of letting it guess stop distances from price alone.
+   */
+  public static calculateATR(candles: Candle[], period: number = 14): number | null {
+    if (!candles || candles.length < period + 1) return null;
+
+    const trueRanges: number[] = [];
+    for (let i = 1; i < candles.length; i++) {
+      const curr = candles[i];
+      const prev = candles[i - 1];
+      const tr = Math.max(
+        curr.high - curr.low,
+        Math.abs(curr.high - prev.close),
+        Math.abs(curr.low - prev.close)
+      );
+      trueRanges.push(tr);
+    }
+
+    const recent = trueRanges.slice(-period);
+    return Number((recent.reduce((a, b) => a + b, 0) / recent.length).toFixed(6));
+  }
+
+  /**
+   * Finds the most recent meaningful swing high/low over a lookback window.
+   * This is the real structural data the "discount/premium" logic in the
+   * AI prompt needs — without it, the model has nothing to check its
+   * discount/premium claims against and is effectively guessing.
+   */
+  public static findRecentSwingRange(
+    candles: Candle[],
+    lookback: number = 50
+  ): { swingHigh: number | null; swingLow: number | null } {
+    if (!candles || candles.length === 0) return { swingHigh: null, swingLow: null };
+
+    const window = candles.slice(-lookback);
+    const swingHigh = Math.max(...window.map((c) => c.high));
+    const swingLow = Math.min(...window.map((c) => c.low));
+
+    return {
+      swingHigh: Number(swingHigh.toFixed(6)),
+      swingLow: Number(swingLow.toFixed(6)),
+    };
   }
 }
 
@@ -987,4 +1112,4 @@ export class MarketWatchList {
       return false;
     }
   }
-}
+}    

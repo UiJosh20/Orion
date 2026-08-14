@@ -124,7 +124,7 @@ export function SocketProvider({
 
     // Join confirmation
     socketInstance.on("join_confirmed", (data) => {
-      console.log("[Socket]: Join confirmed:", data);
+      // console.log("[Socket]: Join confirmed:", data);
       hasJoinedRef.current = true;
     });
 

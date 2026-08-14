@@ -58,6 +58,7 @@ export const getWatchlist = async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
     const watchlist = await MarketWatchList.getUserWatchlist(userId as any);
+    // console.log('Watchlist:', watchlist);
     return res.json({ watchlist });
   } catch (error) {
     console.error('Error in getWatchlist:', error);
