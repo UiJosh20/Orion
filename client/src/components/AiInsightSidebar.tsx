@@ -108,7 +108,7 @@ export default function AiInsightsSidebar() {
     return () => clearInterval(interval);
   }, [isLoading]);
 
-  // Push-based insight subscription
+  // ✅ OPTIMIZED: Only fetch new insight when symbol or interval changes (not risk config)
   useEffect(() => {
     if (!socket || !isConnected || !activeSymbol) return;
 
@@ -124,25 +124,18 @@ export default function AiInsightsSidebar() {
       riskRewardRatio,
     };
 
-    // Helper to sanitize and normalize symbols (strips '/', '_', '-', and spaces)
     const cleanSymbol = (sym?: string) =>
       sym?.replace(/[^A-Z0-9]/gi, "").toUpperCase() ?? "";
 
     const handleInsightUpdate = (payload: InsightPayload) => {
-      console.log("[Insight Sidebar] Received update:", payload);
-
       if (!payload) return;
 
-      // Normalize symbol formatting before comparison (e.g. "BTC/USDT" vs "BTCUSDT")
       const payloadSym = cleanSymbol(payload.symbol);
       const currentSym = cleanSymbol(activeSymbol);
       const payloadInt = payload.interval?.toLowerCase();
       const currentInt = activeInterval?.toLowerCase();
 
       if (payloadSym !== currentSym || payloadInt !== currentInt) {
-        console.warn(
-          `[Insight Sidebar] Mismatched payload ignored: ${payload.symbol}:${payload.interval} (Active: ${activeSymbol}:${activeInterval})`
-        );
         return;
       }
 
@@ -154,7 +147,6 @@ export default function AiInsightsSidebar() {
       const confidence = payload.aiInsight?.confidence;
 
       if (trade && (confidence === "MEDIUM" || confidence === "HIGH")) {
-        // Fetch fresh state directly to prevent stale closure issues
         const currentConfirmedTrades = useMarketStore.getState().confirmedTrades;
         const existingForSymbol = currentConfirmedTrades.filter(
           (t) =>
@@ -187,22 +179,18 @@ export default function AiInsightsSidebar() {
     };
 
     const handleInsightError = (err: { symbol: string; message: string }) => {
-      console.error("[Insight Sidebar] Received error:", err);
       if (cleanSymbol(err.symbol) !== cleanSymbol(activeSymbol)) return;
       setError(err.message || "Failed to generate market insight.");
       setIsLoading(false);
     };
 
-    // 1. Attach listeners BEFORE emitting subscription request
     socket.on("insight_update", handleInsightUpdate);
     socket.on("insight_error", handleInsightError);
 
-    // 2. Unsubscribe previous session if active
     if (activeSubRef.current) {
       socket.emit("unsubscribe_insight", activeSubRef.current);
     }
 
-    // 3. Emit fresh subscription
     socket.emit("subscribe_insight", params);
     activeSubRef.current = params;
 
@@ -214,16 +202,9 @@ export default function AiInsightsSidebar() {
         activeSubRef.current = null;
       }
     };
-  }, [
-    socket,
-    isConnected,
-    activeSymbol,
-    activeInterval,
-    riskPercent,
-    riskRewardRatio,
-    addConfirmedTrade,
-  ]);
+  }, [socket, isConnected, activeSymbol, activeInterval, addConfirmedTrade]);
 
+  // ✅ OPTIMIZED: Only recalculate position sizes when risk/balance changes (no loading)
   const payload = insight?.aiInsight ?? null;
 
   const sections = payload
@@ -320,296 +301,10 @@ export default function AiInsightsSidebar() {
   };
 
   return (
-    <aside className="w-full h-full bg-white dark:bg-slate-900 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative shadcn-scrollbar">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800 mb-4 shrink-0">
-        <div className="text-slate-900 dark:text-slate-100 font-bold tracking-wide">
-          Orion Intelligence (Risk Guard)
-        </div>
-        <div className="text-[10px] text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 rounded-md">
-          {activeSymbol} ({activeInterval})
-        </div>
-      </div>
-      <div className="flex-1 flex flex-col space-y-4">
-        {!isConnected ? (
-          <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 text-[11px]">
-            Connecting to live feed...
-          </div>
-        ) : isLoading ? (
-          <div className="p-6 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3 mt-2">
-            <div className="flex items-center justify-between text-[10px] text-slate-500">
-              <span className="text-blue-600 dark:text-blue-400 font-bold">
-                Selectivity Scan
-              </span>
-              <span className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-            </div>
-            <p className="text-slate-800 dark:text-slate-200 text-sm font-medium transition-all duration-300">
-              {THINKING_STEPS[currentStepIndex]}
-            </p>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              Filtering false breakouts and checking discount/premium
-              structure...
-            </p>
-          </div>
-        ) : error ? (
-          <div className="p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl text-red-600 dark:text-red-400 space-y-2 mt-2">
-            <div className="font-bold">Synthesis Interrupted</div>
-            <p className="text-[11px] text-red-500 dark:text-red-300/80 leading-relaxed">
-              {cleanText(error)}
-            </p>
-          </div>
-        ) : payload ? (
-          <div className="space-y-4 pb-6">
-            {insight?.indicators && (
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
-                  <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
-                    <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />{" "}
-                    RSI
-                  </span>
-                  <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
-                    {insight.indicators.rsi != null
-                      ? insight.indicators.rsi.toFixed(1)
-                      : "N/A"}
-                  </span>
-                </div>
-                <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
-                  <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
-                    <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />{" "}
-                    SMA
-                  </span>
-                  <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
-                    {insight.indicators.sma != null
-                      ? formatPrice(insight.indicators.sma)
-                      : "N/A"}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {confidence && (
-              <div
-                className={`px-3 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-between ${CONFIDENCE_STYLES[confidence]}`}
-              >
-                <span>Confidence</span>
-                <span>{confidence}</span>
-              </div>
-            )}
-
-            {hasActionableTrade && tradePosition ? (
-              <>
-                <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between text-slate-900 dark:text-slate-100 font-bold">
-                    <span className="flex items-center gap-1.5 text-xs">
-                      <Sliders className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />{" "}
-                      {tradePosition.side} setup
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 pt-1">
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 dark:text-slate-400">
-                        Risk % (Stop Loss)
-                      </label>
-                      <select
-                        value={riskPercent}
-                        onChange={(e) =>
-                          setRiskConfig(Number(e.target.value), riskRewardRatio)
-                        }
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
-                      >
-                        <option value={0.5}>0.5% Risk</option>
-                        <option value={1.0}>1.0% Risk</option>
-                        <option value={1.5}>1.5% Risk</option>
-                        <option value={2.0}>2.0% Risk</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 dark:text-slate-400">
-                        Take Profit Ratio (R:R)
-                      </label>
-                      <select
-                        value={riskRewardRatio}
-                        onChange={(e) =>
-                          setRiskConfig(riskPercent, Number(e.target.value))
-                        }
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
-                      >
-                        <option value={1.5}>1 : 1.5 (Standard)</option>
-                        <option value={2.0}>1 : 2.0 (Optimal)</option>
-                        <option value={2.5}>1 : 2.5 (Extended)</option>
-                        <option value={3.0}>1 : 3.0 (High Target)</option>
-                      </select>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-slate-500">
-                    Changing these resubscribes to a fresh setup at the new risk
-                    config.
-                  </p>
-                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
-                    <div>
-                      <span className="text-slate-500">Entry:</span>{" "}
-                      <strong className="text-slate-900 dark:text-slate-100">
-                        ${formatPrice(tradePosition.entry)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Stop:</span>{" "}
-                      <strong className="text-rose-500">
-                        ${formatPrice(tradePosition.stopLoss)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Target:</span>{" "}
-                      <strong className="text-emerald-500">
-                        ${formatPrice(tradePosition.target)}
-                      </strong>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
-                  <div className="text-slate-900 dark:text-slate-100 font-bold text-xs">
-                    Account & Position Size
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-slate-500 dark:text-slate-400">
-                      Account Balance (USD)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={accountBalance || ""}
-                      onChange={(e) =>
-                        setAccountBalance(Number(e.target.value))
-                      }
-                      placeholder="e.g. 5000"
-                      className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
-                    />
-                  </div>
-                  {accountBalance > 0 ? (
-                    <>
-                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
-                        <div>
-                          <span className="text-slate-500">Risking:</span>{" "}
-                          <strong className="text-rose-500">
-                            ${formatPrice(riskAmountUSD)}
-                          </strong>
-                          <span className="text-slate-400">
-                            {" "}
-                            ({riskPercent}%)
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Position size:</span>{" "}
-                          <strong className="text-emerald-500">
-                            {positionSize.toFixed(4)} units
-                          </strong>
-                        </div>
-                      </div>
-
-                      {profitBreakdown && (
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
-                          <div>
-                            <span className="text-slate-500">If TP hits:</span>{" "}
-                            <strong className="text-emerald-500">
-                              +${formatPrice(profitBreakdown.profitUSD)}
-                            </strong>
-                            {profitBreakdown.profitPips !== null && (
-                              <span className="text-slate-400">
-                                {" "}
-                                ({profitBreakdown.profitPips} pips)
-                              </span>
-                            )}
-                          </div>
-                          <div>
-                            <span className="text-slate-500">If SL hits:</span>{" "}
-                            <strong className="text-rose-500">
-                              -${formatPrice(profitBreakdown.lossUSD)}
-                            </strong>
-                            {profitBreakdown.lossPips !== null && (
-                              <span className="text-slate-400">
-                                {" "}
-                                ({profitBreakdown.lossPips} pips)
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {riskPercent > 2 && (
-                        <div className="text-[10px] text-amber-500 pt-1">
-                          Risking more than 2% per trade compounds drawdown fast
-                          — most professional traders cap this at 1–2%.
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-[10px] text-slate-400">
-                      Enter your balance to see position size, dollar risk, and
-                      TP/SL outcomes.
-                    </p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl flex items-start gap-2.5">
-                <ShieldOff className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-                <div>
-                  <div className="text-slate-700 dark:text-slate-300 font-bold text-xs">
-                    No high-conviction setup right now
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
-                    {confidence === "LOW" && tradePosition
-                      ? "The AI found a directional bias but flagged it low-confidence, so no trade is shown."
-                      : "Market structure doesn't meet the discount/premium or risk criteria for a trade."}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              {sections.map((sec, idx) => (
-                <div
-                  key={idx}
-                  className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5"
-                >
-                  <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">
-                    {idx + 1}. {sec.title}
-                  </div>
-                  <p className="text-slate-700 dark:text-slate-300 text-xs leading-relaxed">
-                    {sec.body}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {hasActionableTrade && tradePosition && (
-              <div className="pt-2">
-                <button
-                  onClick={() => setModalStep("choose_ai_or_custom")}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors flex items-center justify-center shadow-lg shadow-blue-500/20 text-xs"
-                >
-                  <span>
-                    Set Alert on Target (${formatPrice(tradePosition.target)})
-                  </span>
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="text-center py-16 text-slate-500 dark:text-slate-400 space-y-2">
-            <p>
-              Initializing telemetry for{" "}
-              <strong className="text-slate-900 dark:text-slate-300">
-                {activeSymbol}
-              </strong>
-              ...
-            </p>
-          </div>
-        )}
-      </div>
-
+    <>
+      {/* ✅ FULL-SCREEN MODAL (Rendered outside sidebar) */}
       {modalStep !== "closed" && tradePosition && (
-        <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <span className="font-bold text-slate-900 dark:text-slate-100 text-sm">
@@ -696,6 +391,296 @@ export default function AiInsightsSidebar() {
           </div>
         </div>
       )}
-    </aside>
+
+      {/* Sidebar Content */}
+      <aside className="w-full h-full bg-white dark:bg-slate-900 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative shadcn-scrollbar">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800 mb-4 shrink-0">
+          <div className="text-slate-900 dark:text-slate-100 font-bold tracking-wide">
+            Orion Intelligence (Risk Guard)
+          </div>
+          <div className="text-[10px] text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 rounded-md">
+            {activeSymbol} ({activeInterval})
+          </div>
+        </div>
+        <div className="flex-1 flex flex-col space-y-4">
+          {!isConnected ? (
+            <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 text-[11px]">
+              Connecting to live feed...
+            </div>
+          ) : isLoading ? (
+            <div className="p-6 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3 mt-2">
+              <div className="flex items-center justify-between text-[10px] text-slate-500">
+                <span className="text-blue-600 dark:text-blue-400 font-bold">
+                  Selectivity Scan
+                </span>
+                <span className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
+              </div>
+              <p className="text-slate-800 dark:text-slate-200 text-sm font-medium transition-all duration-300">
+                {THINKING_STEPS[currentStepIndex]}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                Filtering false breakouts and checking discount/premium
+                structure...
+              </p>
+            </div>
+          ) : error ? (
+            <div className="p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl text-red-600 dark:text-red-400 space-y-2 mt-2">
+              <div className="font-bold">Synthesis Interrupted</div>
+              <p className="text-[11px] text-red-500 dark:text-red-300/80 leading-relaxed">
+                {cleanText(error)}
+              </p>
+            </div>
+          ) : payload ? (
+            <div className="space-y-4 pb-6">
+              {insight?.indicators && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
+                      <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />{" "}
+                      RSI
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
+                      {insight.indicators.rsi != null
+                        ? insight.indicators.rsi.toFixed(1)
+                        : "N/A"}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1.5 text-[11px]">
+                      <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />{" "}
+                      SMA
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-slate-200 font-mono text-sm">
+                      {insight.indicators.sma != null
+                        ? formatPrice(insight.indicators.sma)
+                        : "N/A"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {confidence && (
+                <div
+                  className={`px-3 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-between ${CONFIDENCE_STYLES[confidence]}`}
+                >
+                  <span>Confidence</span>
+                  <span>{confidence}</span>
+                </div>
+              )}
+
+              {hasActionableTrade && tradePosition ? (
+                <>
+                  <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between text-slate-900 dark:text-slate-100 font-bold">
+                      <span className="flex items-center gap-1.5 text-xs">
+                        <Sliders className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />{" "}
+                        {tradePosition.side} setup
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Risk % (Stop Loss)
+                        </label>
+                        <select
+                          value={riskPercent}
+                          onChange={(e) =>
+                            setRiskConfig(Number(e.target.value), riskRewardRatio)
+                          }
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
+                        >
+                          <option value={0.5}>0.5% Risk</option>
+                          <option value={1.0}>1.0% Risk</option>
+                          <option value={1.5}>1.5% Risk</option>
+                          <option value={2.0}>2.0% Risk</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Take Profit Ratio (R:R)
+                        </label>
+                        <select
+                          value={riskRewardRatio}
+                          onChange={(e) =>
+                            setRiskConfig(riskPercent, Number(e.target.value))
+                          }
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
+                        >
+                          <option value={1.5}>1 : 1.5 (Standard)</option>
+                          <option value={2.0}>1 : 2.0 (Optimal)</option>
+                          <option value={2.5}>1 : 2.5 (Extended)</option>
+                          <option value={3.0}>1 : 3.0 (High Target)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      Changing these resubscribes to a fresh setup at the new risk
+                      config.
+                    </p>
+                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                      <div>
+                        <span className="text-slate-500">Entry:</span>{" "}
+                        <strong className="text-slate-900 dark:text-slate-100">
+                          ${formatPrice(tradePosition.entry)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Stop:</span>{" "}
+                        <strong className="text-rose-500">
+                          ${formatPrice(tradePosition.stopLoss)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Target:</span>{" "}
+                        <strong className="text-emerald-500">
+                          ${formatPrice(tradePosition.target)}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
+                    <div className="text-slate-900 dark:text-slate-100 font-bold text-xs">
+                      Account & Position Size
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 dark:text-slate-400">
+                        Account Balance (USD)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={accountBalance || ""}
+                        onChange={(e) =>
+                          setAccountBalance(Number(e.target.value))
+                        }
+                        placeholder="e.g. 5000"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
+                      />
+                    </div>
+                    {accountBalance > 0 ? (
+                      <>
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                          <div>
+                            <span className="text-slate-500">Risking:</span>{" "}
+                            <strong className="text-rose-500">
+                              ${formatPrice(riskAmountUSD)}
+                            </strong>
+                            <span className="text-slate-400">
+                              {" "}
+                              ({riskPercent}%)
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Position size:</span>{" "}
+                            <strong className="text-emerald-500">
+                              {positionSize.toFixed(4)} units
+                            </strong>
+                          </div>
+                        </div>
+
+                        {profitBreakdown && (
+                          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+                            <div>
+                              <span className="text-slate-500">If TP hits:</span>{" "}
+                              <strong className="text-emerald-500">
+                                +${formatPrice(profitBreakdown.profitUSD)}
+                              </strong>
+                              {profitBreakdown.profitPips !== null && (
+                                <span className="text-slate-400">
+                                  {" "}
+                                  ({profitBreakdown.profitPips} pips)
+                                </span>
+                              )}
+                            </div>
+                            <div>
+                              <span className="text-slate-500">If SL hits:</span>{" "}
+                              <strong className="text-rose-500">
+                                -${formatPrice(profitBreakdown.lossUSD)}
+                              </strong>
+                              {profitBreakdown.lossPips !== null && (
+                                <span className="text-slate-400">
+                                  {" "}
+                                  ({profitBreakdown.lossPips} pips)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {riskPercent > 2 && (
+                          <div className="text-[10px] text-amber-500 pt-1">
+                            Risking more than 2% per trade compounds drawdown fast
+                            — most professional traders cap this at 1–2%.
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-slate-400">
+                        Enter your balance to see position size, dollar risk, and
+                        TP/SL outcomes.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl flex items-start gap-2.5">
+                  <ShieldOff className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-slate-700 dark:text-slate-300 font-bold text-xs">
+                      No high-conviction setup right now
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
+                      {confidence === "LOW" && tradePosition
+                        ? "The AI found a directional bias but flagged it low-confidence, so no trade is shown."
+                        : "Market structure doesn't meet the discount/premium or risk criteria for a trade."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {sections.map((sec, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl space-y-1.5"
+                  >
+                    <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">
+                      {idx + 1}. {sec.title}
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-300 text-xs leading-relaxed">
+                      {sec.body}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {hasActionableTrade && tradePosition && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => setModalStep("choose_ai_or_custom")}
+                    className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors flex items-center justify-center shadow-lg shadow-blue-500/20 text-xs"
+                  >
+                    <span>
+                      Set Alert on Target (${formatPrice(tradePosition.target)})
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-16 text-slate-500 dark:text-slate-400 space-y-2">
+              <p>
+                Initializing telemetry for{" "}
+                <strong className="text-slate-900 dark:text-slate-300">
+                  {activeSymbol}
+                </strong>
+                ...
+              </p>
+            </div>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }

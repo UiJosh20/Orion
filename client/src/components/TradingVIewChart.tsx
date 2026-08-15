@@ -19,10 +19,10 @@ import {
   CrosshairMode,
   LineStyle,
   LogicalRange,
+  MouseEventParams,
 } from 'lightweight-charts';
 import { useMarketStore, TradePosition } from '../store/useMarketStore';
 import { useSocket } from '../providers/SocketProvider';
-import { RectanglePlugin } from '../plugins/RectanglePlugin';
 import { RulerOverlay } from './RulerOverlay';
 import { DrawingsOverlay } from './DrawingsOverlay';
 
@@ -72,7 +72,6 @@ function ChartContent() {
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
 
-  const activePrimitivesRef = useRef<RectanglePlugin[]>([]);
   const isHistoryLoadedRef = useRef<boolean>(false);
   const allCandlesRef = useRef<CandlestickData[]>([]);
   const earliestLoadedTimeRef = useRef<number | null>(null);
@@ -83,6 +82,19 @@ function ChartContent() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [isEmpty, setIsEmpty] = useState<boolean>(false);
+  
+  // ✅ FORCE RE-RENDER ON SCROLL TO MAINTAIN PINNING
+  const [renderKey, setRenderKey] = useState(0);
+
+  // User drawing state
+  const [isDrawMode, setIsDrawMode] = useState(false);
+  const [drawStep, setDrawStep] = useState(0); 
+  const [userDraft, setUserDraft] = useState<{
+    time: UTCTimestamp | null;
+    entry: number | null;
+    target: number | null;
+    stopLoss: number | null;
+  }>({ time: null, entry: null, target: null, stopLoss: null });
 
   const marketStore = useMarketStore();
   const { 
@@ -92,104 +104,244 @@ function ChartContent() {
     setActivePosition, 
     aiDrawings,
     confirmedTrades,
+    removeConfirmedTrade,
   } = marketStore;
 
-  const extendedStore = marketStore as unknown as { 
-    aiSetup?: any; 
-    confidence?: string;
-    riskPercent?: number;
-    riskRewardRatio?: number;
-  };
-  const { aiSetup, confidence, riskPercent = 2, riskRewardRatio = 2 } = extendedStore;
+  const extendedStore = marketStore as unknown as { aiSetup?: any };
+  const { aiSetup } = extendedStore;
 
   const { socket, isConnected } = useSocket();
 
-  const clearPrimitives = useCallback(() => {
-    if (!candlestickSeriesRef.current) return;
-    activePrimitivesRef.current.forEach((plugin) => {
-      try {
-        candlestickSeriesRef.current?.detachPrimitive(plugin);
-      } catch (e) {
-        // Ignored
+  const handleCancelPosition = useCallback((id: string) => {
+    if (id === 'active-ai-position' || id === 'user-drawn-position') {
+      setActivePosition(null);
+      setIsDrawMode(false);
+      setDrawStep(0);
+      setUserDraft({ time: null, entry: null, target: null, stopLoss: null });
+    } else if (id.startsWith('confirmed-trade-')) {
+      const tradeId = id.replace('confirmed-trade-', '');
+      if (removeConfirmedTrade) {
+        removeConfirmedTrade(tradeId);
       }
-    });
-    activePrimitivesRef.current = [];
-  }, []);
+    }
+  }, [setActivePosition, removeConfirmedTrade]);
 
-  // Dynamic Risk Sync based on Current Chart Candle Price
+  // Sync AI setup to the latest candle
   useEffect(() => {
-    if (!allCandlesRef.current.length) return;
+    if (!aiSetup || !aiSetup.entry || !aiSetup.stopLoss || !aiSetup.target) return;
+    if (activePosition) return;
 
-    const latestCandle = allCandlesRef.current[allCandlesRef.current.length - 1];
-    const currentPrice = latestCandle.close;
+    const entry = Number(aiSetup.entry);
+    const stopLoss = Number(aiSetup.stopLoss);
+    const target = Number(aiSetup.target);
+    const side = (aiSetup.side || (target > entry ? 'LONG' : 'SHORT')).toUpperCase() as 'LONG' | 'SHORT';
 
-    // Use setup entry if close to live price, otherwise anchor to current live price
-    let entryPrice = aiSetup?.entry ? Number(aiSetup.entry) : currentPrice;
-    if (Math.abs(entryPrice - currentPrice) / currentPrice > 0.05) {
-      entryPrice = currentPrice;
-    }
+    const latestCandleTime = allCandlesRef.current[allCandlesRef.current.length - 1]?.time as UTCTimestamp;
+    const startTime = latestCandleTime || toUnixSeconds(Date.now());
 
-    const isShort = (aiSetup?.side || 'SHORT').toUpperCase() === 'SHORT';
-    const riskDelta = entryPrice * (riskPercent / 100);
+    setActivePosition({
+      side,
+      entry,
+      stopLoss,
+      target,
+      time: startTime,
+    } as TradePosition);
+  }, [aiSetup, activePosition, setActivePosition]);
 
-    const stopLoss = isShort ? entryPrice + riskDelta : entryPrice - riskDelta;
-    const target = isShort ? entryPrice - (riskDelta * riskRewardRatio) : entryPrice + (riskDelta * riskRewardRatio);
+  // User Click Handler
+  useEffect(() => {
+    if (!isChartReady || !chartRef.current || !candlestickSeriesRef.current || !isDrawMode) return;
 
-    const startTime = latestCandle.time as UTCTimestamp;
-
-    if (!activePosition || activePosition.entry !== entryPrice) {
-      setActivePosition({
-        side: isShort ? 'SHORT' : 'LONG',
-        entry: Number(entryPrice.toFixed(2)),
-        stopLoss: Number(stopLoss.toFixed(2)),
-        target: Number(target.toFixed(2)),
-        time: startTime,
-      } as TradePosition);
-    }
-  }, [aiSetup, confidence, riskPercent, riskRewardRatio, activePosition, setActivePosition]);
-
-  const renderCanvasPrimitives = useCallback(() => {
+    const chart = chartRef.current;
     const series = candlestickSeriesRef.current;
-    if (!series || !allCandlesRef.current.length) return;
 
-    clearPrimitives();
+    const handleChartClick = (param: MouseEventParams) => {
+      if (!param.point || !param.time) return;
 
-    const latestCandleTime = (allCandlesRef.current[allCandlesRef.current.length - 1]?.time ?? toUnixSeconds(Date.now())) as UTCTimestamp;
+      const price = series.coordinateToPrice(param.point.y);
+      if (price === null || typeof price !== 'number') return;
 
-    if (activePosition) {
-      const startTime = (activePosition.time ? toUnixSeconds(activePosition.time) : latestCandleTime) as UTCTimestamp;
-      const endTime = (startTime + 3600 * 12) as UTCTimestamp; // Extend box 12h into future
+      const time = param.time as UTCTimestamp;
+      const step = drawStep;
 
-      // Target Rectangle (Green)
-      const targetBox = new RectanglePlugin({
-        id: 'active-target',
-        p1: { time: startTime, price: activePosition.entry },
-        p2: { time: endTime, price: activePosition.target },
-        fillColor: 'rgba(16, 185, 129, 0.18)',
-        borderColor: '#10b981',
-        borderWidth: 1,
-        label: `Target: ${activePosition.target}`,
-        extendRight: true,
-      });
+      if (step === 0) {
+        setUserDraft(prev => ({ ...prev, time, entry: price }));
+        setDrawStep(1);
+      } else if (step === 1) {
+        setUserDraft(prev => ({ ...prev, target: price }));
+        setDrawStep(2);
+      } else if (step === 2) {
+        const finalDraft = { ...userDraft, stopLoss: price };
+        
+        const entry = finalDraft.entry!;
+        const target = finalDraft.target!;
+        const stopLoss = finalDraft.stopLoss!;
+        const side = target > entry ? 'LONG' : 'SHORT';
+        const time = finalDraft.time!;
 
-      // Stop Loss Rectangle (Red)
-      const stopBox = new RectanglePlugin({
-        id: 'active-stop',
-        p1: { time: startTime, price: activePosition.entry },
-        p2: { time: endTime, price: activePosition.stopLoss },
-        fillColor: 'rgba(239, 68, 68, 0.18)',
-        borderColor: '#ef4444',
-        borderWidth: 1,
-        label: `Stop: ${activePosition.stopLoss}`,
-        extendRight: true,
-      });
+        setActivePosition({
+          side,
+          entry,
+          stopLoss,
+          target,
+          time,
+        } as TradePosition);
 
-      series.attachPrimitive(targetBox);
-      series.attachPrimitive(stopBox);
-      activePrimitivesRef.current.push(targetBox, stopBox);
+        setIsDrawMode(false);
+        setDrawStep(0);
+        setUserDraft({ time: null, entry: null, target: null, stopLoss: null });
+      }
+    };
+
+    chart.subscribeClick(handleChartClick);
+    return () => {
+      chart.unsubscribeClick(handleChartClick);
+    };
+  }, [isChartReady, isDrawMode, drawStep, userDraft, setActivePosition]);
+
+  // ✅ PERFECT PINNING: Re-render on every chart scroll and resize
+  useEffect(() => {
+    if (!isChartReady || !chartRef.current) return;
+    
+    const timeScale = chartRef.current.timeScale();
+
+    const handleScroll = () => {
+      setRenderKey(prev => prev + 1); // Force recalculation of coordinates
+    };
+
+    timeScale.subscribeVisibleLogicalRangeChange(handleScroll);
+
+    return () => {
+      timeScale.unsubscribeVisibleLogicalRangeChange(handleScroll);
+    };
+  }, [isChartReady]);
+
+  // ✅ FIXED: PHYSICAL RENDERING WITH PERFECT GRID PINNING
+  const calculatePositionOverlay = useCallback((position: TradePosition) => {
+    if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current) return null;
+    
+    const timeScale = chartRef.current.timeScale();
+    const series = candlestickSeriesRef.current;
+
+    let startTime = toUnixSeconds(position.time || Date.now());
+    let xStart = timeScale.timeToCoordinate(startTime);
+
+    // If time isn't found, calculate fallback to the right edge of the chart
+    if (xStart === null) {
+      const visibleRange = timeScale.getVisibleLogicalRange();
+      if (visibleRange) {
+        const coordinate = timeScale.logicalToCoordinate(visibleRange.to);
+        xStart = coordinate !== null ? coordinate : 0;
+      } else {
+        xStart = 0;
+      }
     }
-  }, [activePosition, clearPrimitives]);
 
+    const yEntry = series.priceToCoordinate(position.entry);
+    const yTarget = series.priceToCoordinate(position.target);
+    const yStop = series.priceToCoordinate(position.stopLoss);
+
+    if (yEntry === null || yTarget === null || yStop === null) return null;
+
+    const width = 180;
+    const x = typeof xStart === 'number' ? xStart : 0;
+
+    const minY = Math.min(yEntry, yTarget, yStop);
+    const maxY = Math.max(yEntry, yTarget, yStop);
+    const height = maxY - minY;
+
+    // Ensure side is always defined
+    const side = position.side || (position.target > position.entry ? 'LONG' : 'SHORT');
+    const targetIsAbove = side === 'LONG';
+
+    const finalHeight = Math.max(height, 40);
+
+    return {
+      x,
+      y: minY,
+      width,
+      height: finalHeight,
+      yEntry,
+      yTarget,
+      yStop,
+      targetIsAbove,
+      side,
+      entry: position.entry,
+      target: position.target,
+      stopLoss: position.stopLoss,
+    };
+  }, [renderKey]); // ✅ Depend on renderKey to recalculate on every scroll
+
+  // ✅ PHYSICAL RENDERING
+  const renderPositionOverlay = useCallback(() => {
+    if (!activePosition) return null;
+    
+    const coords = calculatePositionOverlay(activePosition);
+    if (!coords) return null;
+
+    const { x, y, width, height, yEntry, yTarget, yStop, targetIsAbove, side, entry, target, stopLoss } = coords;
+
+    const targetAreaHeight = Math.abs(yEntry - yTarget);
+    const stopAreaHeight = Math.abs(yEntry - yStop);
+
+    const targetTop = targetIsAbove ? 0 : stopAreaHeight;
+    const stopTop = targetIsAbove ? targetAreaHeight : 0;
+
+    return (
+      <div 
+        className="absolute pointer-events-auto group z-50"
+        style={{ left: x, top: y, width, height }}
+      >
+        {/* 1. Target Area (Green Box) */}
+        <div 
+          className="absolute border border-emerald-500/60 bg-emerald-500/20"
+          style={{ 
+            top: targetTop,
+            height: targetAreaHeight,
+            width: '100%'
+          }}
+        >
+          <div className="absolute top-1 right-2 text-[10px] text-emerald-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            Target: ${target.toFixed(2)}
+          </div>
+        </div>
+
+        {/* 2. Stop Loss Area (Red Box) */}
+        <div 
+          className="absolute border border-rose-500/60 bg-rose-500/20"
+          style={{ 
+            top: stopTop,
+            height: stopAreaHeight,
+            width: '100%'
+          }}
+        >
+          <div className="absolute top-1 right-2 text-[10px] text-rose-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            Stop: ${stopLoss.toFixed(2)}
+          </div>
+        </div>
+
+        {/* 3. Entry Line */}
+        <div 
+          className="absolute w-full border-t border-slate-400 border-dashed"
+          style={{ top: yEntry - y }}
+        >
+          <div className="absolute -top-3.5 left-2 text-[10px] text-slate-300 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            {side} @ ${entry.toFixed(2)}
+          </div>
+        </div>
+
+        {/* 4. Cancel Button */}
+        <button
+          onClick={() => handleCancelPosition('active-ai-position')}
+          className="absolute -top-2.5 -right-2.5 w-5 h-5 rounded-full bg-slate-800 border border-slate-600 text-slate-300 hover:bg-red-500 hover:border-red-400 hover:text-white flex items-center justify-center text-[10px] font-bold transition-colors shadow-lg z-10"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }, [activePosition, calculatePositionOverlay, handleCancelPosition]);
+
+  // Setup Chart
   useEffect(() => {
     if (!chartContainerRef.current) return;
     const container = chartContainerRef.current;
@@ -236,20 +388,13 @@ function ChartContent() {
     resizeObserver.observe(container);
 
     return () => {
-      clearPrimitives();
       resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
       candlestickSeriesRef.current = null;
       setIsChartReady(false);
     };
-  }, [clearPrimitives]);
-
-  useEffect(() => {
-    if (isChartReady) {
-      renderCanvasPrimitives();
-    }
-  }, [isChartReady, activePosition, confirmedTrades, renderCanvasPrimitives]);
+  }, []);
 
   const fetchOlderCandles = useCallback(() => {
     if (!socket || !isConnected) return;
@@ -322,7 +467,6 @@ function ChartContent() {
       chartRef.current?.timeScale().fitContent();
 
       setIsLoading(false);
-      renderCanvasPrimitives();
     };
 
     const handleKlineUpdate = (candle: any) => {
@@ -354,10 +498,56 @@ function ChartContent() {
       socket.off('klines_history', handleKlinesHistory);
       socket.off('kline_update', handleKlineUpdate);
     };
-  }, [activeSymbol, activeInterval, isConnected, socket, renderCanvasPrimitives]);
+  }, [activeSymbol, activeInterval, isConnected, socket]);
 
   return (
     <div className="relative w-full h-full flex-1 min-h-100 md:min-h-150 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden p-2 flex flex-col">
+      
+      {/* Toolbar */}
+      <div className="absolute top-3 left-3 z-40 flex items-center gap-2">
+        <button
+          onClick={() => {
+            if(isDrawMode) {
+              setIsDrawMode(false);
+              setDrawStep(0);
+              setUserDraft({ time: null, entry: null, target: null, stopLoss: null });
+            } else {
+              setIsDrawMode(true);
+            }
+          }}
+          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors shadow-lg ${
+            isDrawMode 
+              ? 'bg-rose-600 text-white border border-rose-400 animate-pulse' 
+              : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+          }`}
+        >
+          {isDrawMode ? 'Cancel Draw' : '✏️ Draw Setup'}
+        </button>
+
+        {isDrawMode && (
+          <div className="bg-slate-900/95 border border-slate-700/80 rounded-lg px-3 py-1.5 text-[10px] text-emerald-400 font-mono shadow-xl backdrop-blur-md">
+            {drawStep === 0 && 'Click chart for Entry Price'}
+            {drawStep === 1 && 'Click chart for Target Price'}
+            {drawStep === 2 && 'Click chart for Stop Loss'}
+          </div>
+        )}
+      </div>
+
+      {/* Top Right Controls */}
+      {activePosition && !isDrawMode && (
+        <div className="absolute top-3 right-3 z-40 flex items-center gap-2 bg-slate-900/95 border border-slate-700/80 rounded-lg px-3 py-1.5 shadow-xl backdrop-blur-md">
+          <span className="text-[11px] font-medium text-slate-300">
+            Setup: <strong className="text-emerald-400">{activePosition.side}</strong>
+          </span>
+          <button
+            onClick={() => handleCancelPosition('active-ai-position')}
+            className="text-[10px] font-semibold bg-red-500/20 text-red-400 border border-red-500/40 rounded px-2 py-0.5 hover:bg-red-500/30 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       {isLoading && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm text-xs font-mono text-emerald-400">
           Loading {activeSymbol} ({activeInterval})...
@@ -377,7 +567,10 @@ function ChartContent() {
         </div>
       )}
 
-      <div ref={chartContainerRef} className="w-full h-full flex-1 relative cursor-crosshair">
+      <div ref={chartContainerRef} className="w-full h-full flex-1 relative">
+        {/* ✅ The position overlay is pinned and recalculates on scroll */}
+        {isChartReady && renderPositionOverlay()}
+
         {isChartReady && chartRef.current && candlestickSeriesRef.current && (
           <RulerOverlay 
             chartInstance={chartRef.current}
