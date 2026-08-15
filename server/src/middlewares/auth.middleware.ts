@@ -10,13 +10,17 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
+  // 1. Extract token from HttpOnly cookie or Authorization header fallback
+  let token = req.cookies?.orion_at;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Access token required' });
+  if (!token && req.headers.authorization?.startsWith('Bearer ')) {
+    token = req.headers.authorization.split(' ')[1];
   }
 
-  const token = authHeader.split(' ')[1];
+  // 2. Reject if no token is found in either source
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
 
   try {
     const decoded = jwt.verify(token, ENV.JWT_ACCESS_SECRET || 'access_secret_fallback') as {

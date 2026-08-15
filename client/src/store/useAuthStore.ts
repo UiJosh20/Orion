@@ -23,58 +23,57 @@ interface AuthState {
   logout: () => Promise<void>;
 }
 
+const IS_LOGGED_IN_KEY = 'orion_is_logged_in';
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   deviceUuid: '',
   user: null,
   isAuthenticated: false,
   isInitializing: true,
 
-  initializeSession: async () => {
-    try {
-      const deviceUuid = getOrCreateDeviceUuid();
-      set({ deviceUuid });
+ initializeSession: async () => {
+  set({ isInitializing: true });
+  try {
+    const deviceUuid = getOrCreateDeviceUuid();
+    set({ deviceUuid });
 
-      // 1. Register/sync device session in the database
-      await api.post(
-        ENDPOINTS.SESSION.DEVICE,
-        { deviceUuid },
-        { headers: { 'x-device-uuid': deviceUuid } }
-      );
+    // 1. Sync device session on backend
+    await api.post(ENDPOINTS.SESSION.DEVICE, { deviceUuid });
 
-      // 2. Authenticate device session (Backend sets guest HttpOnly cookie)
-      await api.post(
-        ENDPOINTS.AUTH.DEVICE,
-        {},
-        { headers: { 'x-device-uuid': deviceUuid } }
-      );
+    // 2. Authenticate device session (Pass deviceUuid in body as well)
+    await api.post(ENDPOINTS.AUTH.DEVICE, { deviceUuid });
 
-      // 3. Retrieve user status via /auth/me (Cookies auto-sent by browser)
-      const res = await api.get(ENDPOINTS.AUTH.ME);
-      if (res.data?.user) {
-        set({ user: res.data.user, isAuthenticated: true });
-        return;
-      }
+    // 3. Fetch user profile
+    const res = await api.get(ENDPOINTS.AUTH.ME);
 
-      set({ user: null, isAuthenticated: false });
-    } catch (error) {
-      console.error('Session initialization failed:', error);
-      set({ user: null, isAuthenticated: false });
-    } finally {
-      set({ isInitializing: false });
+    if (res.data?.user) {
+      localStorage.setItem(IS_LOGGED_IN_KEY, 'true');
+      set({ user: res.data.user, isAuthenticated: true });
+      return;
     }
-  },
+
+    localStorage.setItem(IS_LOGGED_IN_KEY, 'false');
+    set({ user: null, isAuthenticated: false });
+  } catch (error: any) {
+    localStorage.setItem(IS_LOGGED_IN_KEY, 'false');
+    set({ user: null, isAuthenticated: false });
+  } finally {
+    set({ isInitializing: false });
+  }
+},
 
   loginWithGoogle: async (idToken: string) => {
     try {
       const { deviceUuid } = get();
-      // Server validates idToken, sets Google session HttpOnly cookies, and migrates guest data
+      
       const res = await api.post(
         ENDPOINTS.AUTH.GOOGLE,
         { idToken },
-        { headers: { 'x-device-uuid': deviceUuid } }
+        { headers: { 'X-Device-UUID': deviceUuid } }
       );
 
       const { user } = res.data;
+      localStorage.setItem(IS_LOGGED_IN_KEY, 'true');
       set({ user, isAuthenticated: true });
     } catch (error) {
       console.error('Google login failed:', error);
@@ -84,14 +83,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     try {
-      // Calls endpoint where backend clears the HttpOnly auth cookies (Set-Cookie: max-age=0)
       await api.post(ENDPOINTS.AUTH.LOGOUT);
     } catch {
-      // Ignore logout API errors
+      // Ignore network errors on logout
     } finally {
+      localStorage.setItem(IS_LOGGED_IN_KEY, 'false');
       set({ user: null, isAuthenticated: false });
 
-      // Re-initialize device session so a fresh guest device cookie is re-established immediately
+      // Re-establish guest session
       await get().initializeSession();
     }
   },

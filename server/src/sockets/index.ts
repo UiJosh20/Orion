@@ -32,6 +32,9 @@ function buildInsightRoomKey(p: InsightSubscriptionParams): string {
 
 async function generateInsightPayload(params: InsightSubscriptionParams) {
   const { symbol, interval, riskPercent, riskRewardRatio } = params;
+  console.log(
+    `[Insight] Starting generation for ${symbol} (${interval}, risk=${riskPercent}%, rr=${riskRewardRatio})`,
+  );
 
   const marketData = await MarketOrchestrator.getDynamicMarketData(
     symbol,
@@ -40,38 +43,68 @@ async function generateInsightPayload(params: InsightSubscriptionParams) {
   if (!marketData?.candles?.length) {
     throw new Error(`No candle data available for ${symbol}`);
   }
-
-  const closingPrices = marketData.candles.map((c: any) => c.close);
-  const rsiValues = MarketMathService.calculateRSI(closingPrices) || [];
-  const smaValues = MarketMathService.calculateSMA(closingPrices, 20) || [];
-  const currentRsi = rsiValues.length ? rsiValues[rsiValues.length - 1] : null;
-  const currentSma = smaValues.length ? smaValues[smaValues.length - 1] : null;
-  const atr = MarketMathService.calculateATR(marketData.candles);
-  const { swingHigh, swingLow } = MarketMathService.findRecentSwingRange(
-    marketData.candles,
-    50,
+  console.log(
+    `[Insight] Got ${marketData.candles.length} candles for ${symbol}, latest price ${marketData.latestPrice}`,
   );
 
+  const telemetry = MarketMathService.getComprehensiveTelemetry(
+    marketData.candles,
+  );
+  console.log(`[Insight] Telemetry computed:`, {
+    rsi: telemetry.rsi,
+    sma: telemetry.sma,
+    atr: telemetry.atr,
+    adx: telemetry.adx,
+    vwap: telemetry.vwap,
+  });
+
+  let volume24hChangePct: number | null = null;
+  if (marketData.candles.length >= 25) {
+    const recentVol = marketData.candles
+      .slice(-24)
+      .reduce((s: number, c: any) => s + (c.volume || 0), 0);
+    const priorVol = marketData.candles
+      .slice(-48, -24)
+      .reduce((s: number, c: any) => s + (c.volume || 0), 0);
+    if (priorVol > 0) {
+      volume24hChangePct = Number(
+        (((recentVol - priorVol) / priorVol) * 100).toFixed(2),
+      );
+    }
+  }
+
+  console.log(`[Insight] Calling Gemini for ${symbol}...`);
   const aiInsight = await AiInsightService.generateMarketInsight({
     symbol: marketData.symbol,
     interval,
     assetType: marketData.assetType,
     latestPrice: marketData.latestPrice,
-    rsi: currentRsi,
-    sma: currentSma,
+    rsi: telemetry.rsi,
+    sma: telemetry.sma,
+    atr: telemetry.atr,
+    adx: telemetry.adx?.adx ?? null,
+    pdi: telemetry.adx?.pdi ?? null,
+    mdi: telemetry.adx?.mdi ?? null,
+    vwap: telemetry.vwap ?? null,
+    bollingerBands: telemetry.bollingerBands ?? null,
+    recentSwingHigh: telemetry.swingRange.swingHigh,
+    recentSwingLow: telemetry.swingRange.swingLow,
+    volume24hChangePct,
     newsHeadlines: marketData.headlines || [],
-    atr,
-    recentSwingHigh: swingHigh,
-    recentSwingLow: swingLow,
+    fundingRate: null,
     riskPercent,
     riskRewardRatio,
   });
+  console.log(
+    `[Insight] Gemini responded for ${symbol}. confidence=${aiInsight.confidence}, hasTrade=${!!aiInsight.tradePosition}`,
+  );
 
   return {
     symbol: marketData.symbol,
     interval,
     latestPrice: marketData.latestPrice,
-    indicators: { rsi: currentRsi, sma: currentSma, atr, swingHigh, swingLow },
+    indicators: telemetry,
+    volume24hChangePct,
     aiInsight,
     generatedAt: Date.now(),
   };
@@ -188,6 +221,7 @@ export function initSocketHandlers(io: SocketIOServer) {
         }
       },
     );
+
     // 2. Chart Room Subscription (candles)
     socket.on(
       "subscribe_symbol",
@@ -267,7 +301,16 @@ export function initSocketHandlers(io: SocketIOServer) {
         riskPercent?: number;
         riskRewardRatio?: number;
       }) => {
-        if (!raw?.symbol) return;
+        console.log(
+          `[WebSocket] Received subscribe_insight from ${socket.id}:`,
+          raw,
+        );
+        if (!raw?.symbol) {
+          console.warn(
+            `[WebSocket] subscribe_insight rejected — no symbol in payload`,
+          );
+          return;
+        }
 
         const params: InsightSubscriptionParams = {
           symbol: raw.symbol.toUpperCase().trim(),
@@ -283,11 +326,14 @@ export function initSocketHandlers(io: SocketIOServer) {
 
         try {
           const payload = await generateInsightPayload(params);
+          console.log(
+            `[WebSocket] Emitting insight_update to ${socket.id} for ${key}`,
+          );
           socket.emit("insight_update", payload);
         } catch (err: any) {
           console.error(
             `[WebSocket Error]: Failed to generate insight for ${key}`,
-            err.message,
+            err,
           );
           socket.emit("insight_error", {
             symbol: params.symbol,

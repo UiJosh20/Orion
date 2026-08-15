@@ -1,5 +1,4 @@
-// market.service.ts
-import { RSI, SMA } from "technicalindicators";
+import { RSI, SMA, ADX, BollingerBands } from "technicalindicators";
 import { ENV } from "../../config/env.js";
 import axios from "axios";
 import WebSocket from "ws";
@@ -23,11 +22,21 @@ export interface Candle {
 export interface MarketDataPayload {
   symbol: string;
   interval: string;
-  assetType: string;
+  assetType: "crypto" | "index" | "forex";
   latestPrice: number;
   candles: Candle[];
   headlines?: any[];
   lastUpdated: string;
+}
+
+export interface IndicatorTelemetry {
+  rsi: number | null;
+  sma: number | null;
+  atr: number | null;
+  adx: { adx: number; pdi: number; mdi: number } | null;
+  vwap: number | null;
+  bollingerBands: { upper: number; middle: number; lower: number; bandwidthPct: number } | null;
+  swingRange: { swingHigh: number | null; swingLow: number | null };
 }
 
 interface WebSocketCandle {
@@ -40,34 +49,43 @@ interface WebSocketCandle {
   isFinal: boolean;
 }
 
-// Forex Provider Interface - Plug in later
 export interface IForexProvider {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getProviderName(): string;
 }
 
 // ============================================
-// MARKET SERVICE - CRYPTO WITH MULTIPLE FALLBACKS
+// MARKET SERVICE - CRYPTO, INDICES & FOREX
 // ============================================
 
 export class MarketService {
   private static cache: Map<string, { candles: Candle[]; timestamp: number }> = new Map();
-  private static CACHE_TTL = 60000; // 1 minute
+  private static CACHE_TTL = 30000; // 30 seconds
   private static forexProvider: IForexProvider | null = null;
   private static isBinanceAvailable = true;
   private static lastBinanceCheck = 0;
-  private static BINANCE_CHECK_INTERVAL = 30000; // Check every 30 seconds
+  private static BINANCE_CHECK_INTERVAL = 30000;
 
-  /**
-   * Register a forex provider (can be plugged in later)
-   */
   public static registerForexProvider(provider: IForexProvider): void {
     this.forexProvider = provider;
     console.log(`[MarketService] Forex provider registered: ${provider.getProviderName()}`);
   }
 
   /**
-   * Main method to get candles - auto-detects crypto vs forex
+   * Helper to parse and sanitize standard symbols (e.g., "BTC/USDT" or "BTCUSDT") into base & quote components.
+   */
+  private static parseSymbol(rawSymbol: string): { base: string; quote: string; clean: string } {
+    const clean = rawSymbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+    if (clean.endsWith("USDT")) return { base: clean.slice(0, -4), quote: "USDT", clean };
+    if (clean.endsWith("USDC")) return { base: clean.slice(0, -4), quote: "USDC", clean };
+    if (clean.endsWith("BUSD")) return { base: clean.slice(0, -4), quote: "BUSD", clean };
+    if (clean.endsWith("USD")) return { base: clean.slice(0, -3), quote: "USD", clean };
+    if (clean.endsWith("BTC")) return { base: clean.slice(0, -3), quote: "BTC", clean };
+    return { base: clean.slice(0, 3), quote: clean.slice(3), clean };
+  }
+
+  /**
+   * Main entry point - routes to Crypto, Index, or Forex providers
    */
   public static async getCandles(
     symbol: string = "BTCUSDT",
@@ -76,29 +94,24 @@ export class MarketService {
   ): Promise<Candle[]> {
     const formattedSymbol = symbol.trim().toUpperCase();
     const cacheKey = `${formattedSymbol}:${interval}:${limit}`;
-    
-    // Check memory cache first
+
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[Cache] Returning cached data for ${formattedSymbol}`);
       return cached.candles;
     }
 
     let candles: Candle[] = [];
 
     try {
-      // Check if it's crypto or forex
-      const isCrypto = this.isCryptoSymbol(formattedSymbol);
-
-      if (isCrypto) {
+      if (this.isIndexSymbol(formattedSymbol)) {
+        candles = await this.fetchYahooFinanceIndex(formattedSymbol, interval, limit);
+      } else if (this.isCryptoSymbol(formattedSymbol)) {
         candles = await this.fetchCryptoData(formattedSymbol, interval, limit);
       } else {
-        // Use forex provider if registered
         if (this.forexProvider) {
           candles = await this.forexProvider.getCandles(formattedSymbol, interval, limit);
         } else {
-          console.warn(`[MarketService] No forex provider for ${formattedSymbol}`);
-          candles = [];
+          candles = await this.fetchYahooFinanceIndex(formattedSymbol, interval, limit);
         }
       }
     } catch (error: any) {
@@ -106,20 +119,125 @@ export class MarketService {
       candles = [];
     }
 
-    // If we got no candles, return empty array (NO MOCK DATA)
     if (!candles || candles.length === 0) {
       console.warn(`[MarketService] No data available for ${formattedSymbol}`);
       return [];
     }
 
-    // Cache the result
     this.cache.set(cacheKey, { candles, timestamp: Date.now() });
-    
     return candles;
   }
 
+  public static isCryptoSymbol(symbol: string): boolean {
+    const cleanSymbol = symbol.replace("/", "").toUpperCase();
+    const cryptoQuotes = ["USDT", "BTC", "ETH", "BNB", "BUSD", "USDC", "DAI", "TUSD"];
+    const isIndex = this.isIndexSymbol(cleanSymbol);
+    if (isIndex) return false;
+
+    return (
+      cryptoQuotes.some((q) => cleanSymbol.endsWith(q)) ||
+      cleanSymbol.includes("USDT") ||
+      cleanSymbol.includes("BTC") ||
+      (cleanSymbol.length >= 6 && !cleanSymbol.startsWith("^"))
+    );
+  }
+
+  public static isIndexSymbol(symbol: string): boolean {
+    const cleanSymbol = symbol.replace("/", "").toUpperCase();
+    const indexSymbols = [
+      "NAS100", "US100", "NASDAQ", "QQQ", "^NDX",
+      "US500", "SP500", "SPX", "SPY", "^GSPC",
+      "US30", "DOW", "DJI", "DIA", "^DJI",
+      "DXY", "DX-Y.NYB", "UUP", "VIX", "^VIX"
+    ];
+    return indexSymbols.includes(cleanSymbol);
+  }
+
   /**
-   * Fetch crypto data with multiple fallbacks
+   * FREE INDEX PROVIDER: Yahoo Finance Engine
+   */
+  private static async fetchYahooFinanceIndex(
+    symbol: string,
+    interval: string,
+    limit: number
+  ): Promise<Candle[]> {
+    const cleanSymbol = symbol.replace("/", "").toUpperCase();
+    const symbolMap: Record<string, string> = {
+      NAS100: "^NDX",
+      US100: "^NDX",
+      NASDAQ: "^NDX",
+      QQQ: "QQQ",
+      US500: "^GSPC",
+      SP500: "^GSPC",
+      SPX: "^GSPC",
+      SPY: "SPY",
+      US30: "^DJI",
+      DOW: "^DJI",
+      DIA: "DIA",
+      DXY: "DX-Y.NYB",
+      VIX: "^VIX",
+    };
+
+    const yahooSymbol = symbolMap[cleanSymbol] || cleanSymbol;
+    const intervalMap: Record<string, string> = {
+      "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+      "1h": "1h", "2h": "1h", "4h": "1h", "1d": "1d", "1w": "1wk", "1M": "1mo"
+    };
+
+    const yahooInterval = intervalMap[interval] || "1h";
+
+    try {
+      console.log(`[YahooFinance] Fetching index ${yahooSymbol} (${yahooInterval})...`);
+
+      const response = await axios.get(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}`,
+        {
+          params: {
+            range: "7d",
+            interval: yahooInterval,
+          },
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          },
+          timeout: 4000,
+        }
+      );
+
+      const result = response.data?.chart?.result?.[0];
+      if (!result) throw new Error("Invalid structure from Yahoo Finance");
+
+      const timestamps = result.timestamp || [];
+      const quote = result.indicators?.quote?.[0] || {};
+      const opens = quote.open || [];
+      const highs = quote.high || [];
+      const lows = quote.low || [];
+      const closes = quote.close || [];
+      const volumes = quote.volume || [];
+
+      const candles: Candle[] = [];
+
+      for (let i = 0; i < timestamps.length; i++) {
+        if (closes[i] !== null && closes[i] !== undefined) {
+          candles.push({
+            datetime: new Date(timestamps[i] * 1000).toISOString(),
+            open: Number((opens[i] ?? closes[i]).toFixed(2)),
+            high: Number((highs[i] ?? closes[i]).toFixed(2)),
+            low: Number((lows[i] ?? closes[i]).toFixed(2)),
+            close: Number(closes[i].toFixed(2)),
+            volume: Number(volumes[i] ?? 0),
+          });
+        }
+      }
+
+      console.log(`[YahooFinance] Fetched ${candles.length} candles for ${symbol}`);
+      return candles.slice(-limit);
+    } catch (error: any) {
+      throw new Error(`Yahoo Finance failed for ${symbol}: ${error.message}`);
+    }
+  }
+
+  /**
+   * CRYPTO MULTI-PROVIDER ENGINE (CLOUD-SAFE AND RESILIENT)
    */
   private static async fetchCryptoData(
     symbol: string,
@@ -127,10 +245,12 @@ export class MarketService {
     limit: number
   ): Promise<Candle[]> {
     const providers = [
-      { name: 'Binance', fn: () => this.fetchBinanceCrypto(symbol, interval, limit) },
-      { name: 'CoinCap', fn: () => this.fetchCoinCapCrypto(symbol, interval, limit) },
-      { name: 'Kraken', fn: () => this.fetchKrakenCrypto(symbol, interval, limit) },
-      { name: 'Bitfinex', fn: () => this.fetchBitfinexCrypto(symbol, interval, limit) },
+      { name: "BinanceVision", fn: () => this.fetchBinanceVisionCrypto(symbol, interval, limit) },
+      { name: "Bybit", fn: () => this.fetchBybitCrypto(symbol, interval, limit) },
+      { name: "CryptoCompare", fn: () => this.fetchCryptoCompareCrypto(symbol, interval, limit) },
+      { name: "BinancePublic", fn: () => this.fetchBinanceCrypto(symbol, interval, limit) },
+      { name: "Kraken", fn: () => this.fetchKrakenCrypto(symbol, interval, limit) },
+      { name: "Bitfinex", fn: () => this.fetchBitfinexCrypto(symbol, interval, limit) },
     ];
 
     let lastError: Error | null = null;
@@ -140,35 +260,94 @@ export class MarketService {
         console.log(`[MarketService] Trying ${provider.name} for ${symbol}...`);
         const candles = await provider.fn();
         if (candles && candles.length > 0) {
-          console.log(`[MarketService] Successfully fetched ${candles.length} candles from ${provider.name}`);
           return candles;
         }
       } catch (error: any) {
         lastError = error;
         console.warn(`[${provider.name}] Failed: ${error.message}`);
-        // Continue to next provider
         continue;
       }
     }
 
-    // If all providers fail, throw error
-    throw new Error(`All providers failed for ${symbol}: ${lastError?.message || 'Unknown error'}`);
+    throw new Error(`All providers failed for ${symbol}: ${lastError?.message || "Unknown error"}`);
   }
 
-  /**
-   * Check if symbol is crypto
-   */
-  private static isCryptoSymbol(symbol: string): boolean {
-    const cryptoQuotes = ["USDT", "BTC", "ETH", "BNB", "BUSD", "USDC", "DAI", "TUSD"];
-    return cryptoQuotes.some((q) => symbol.endsWith(q)) ||
-      symbol.includes("USDT") ||
-      symbol.includes("BTC") ||
-      (symbol.length >= 6 && !symbol.includes("/"));
+  /** Provider 1: Binance Vision API (Cloud Unblocked Public Data Mirror) */
+  private static async fetchBinanceVisionCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const { clean } = this.parseSymbol(symbol);
+    const binanceInterval = this.BINANCE_INTERVAL_MAP[interval] || "1h";
+
+    const response = await axios.get("https://data-api.binance.vision/api/v3/klines", {
+      params: { symbol: clean, interval: binanceInterval, limit: Math.min(limit, 500) },
+      timeout: 3500,
+    });
+
+    return response.data.map((kline: any[]) => ({
+      datetime: new Date(kline[0]).toISOString(),
+      open: parseFloat(kline[1]),
+      high: parseFloat(kline[2]),
+      low: parseFloat(kline[3]),
+      close: parseFloat(kline[4]),
+      volume: parseFloat(kline[5]),
+    }));
   }
 
-  /**
-   * Check if Binance is available
-   */
+  /** Provider 2: Bybit V5 Public Spot REST API */
+  private static async fetchBybitCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const { clean } = this.parseSymbol(symbol);
+    const bybitIntervalMap: Record<string, string> = {
+      "1m": "1", "5m": "5", "15m": "15", "30m": "30",
+      "1h": "60", "2h": "120", "4h": "240", "6h": "360", "1d": "D", "1w": "W"
+    };
+    const bybitInterval = bybitIntervalMap[interval] || "60";
+
+    const response = await axios.get("https://api.bybit.com/v5/market/kline", {
+      params: { category: "spot", symbol: clean, interval: bybitInterval, limit: Math.min(limit, 200) },
+      timeout: 3500,
+    });
+
+    const list = response.data?.result?.list;
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error("Empty response from Bybit");
+    }
+
+    // Bybit returns newest first, reverse to chronological order
+    return [...list].reverse().map((d: any[]) => ({
+      datetime: new Date(parseInt(d[0])).toISOString(),
+      open: parseFloat(d[1]),
+      high: parseFloat(d[2]),
+      low: parseFloat(d[3]),
+      close: parseFloat(d[4]),
+      volume: parseFloat(d[5]),
+    }));
+  }
+
+  /** Provider 3: CryptoCompare Public API */
+  private static async fetchCryptoCompareCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const { base, quote } = this.parseSymbol(symbol);
+    const isMinute = ["1m", "5m", "15m", "30m"].includes(interval);
+    const isDay = ["1d", "1w", "1M"].includes(interval);
+    const endpointType = isMinute ? "histominute" : isDay ? "histoday" : "histohour";
+
+    const response = await axios.get(`https://min-api.cryptocompare.com/data/v2/${endpointType}`, {
+      params: { fsym: base, tsym: quote, limit: Math.min(limit, 500) },
+      timeout: 3500,
+    });
+
+    if (response.data?.Response === "Error" || !response.data?.Data?.Data) {
+      throw new Error(response.data?.Message || "CryptoCompare error");
+    }
+
+    return response.data.Data.Data.map((item: any) => ({
+      datetime: new Date(item.time * 1000).toISOString(),
+      open: item.open,
+      high: item.high,
+      low: item.low,
+      close: item.close,
+      volume: item.volumeto,
+    }));
+  }
+
   private static async checkBinanceAvailability(): Promise<boolean> {
     const now = Date.now();
     if (now - this.lastBinanceCheck < this.BINANCE_CHECK_INTERVAL) {
@@ -176,9 +355,7 @@ export class MarketService {
     }
 
     try {
-      const response = await axios.get('https://api.binance.com/api/v3/ping', {
-        timeout: 3000
-      });
+      const response = await axios.get("https://api.binance.com/api/v3/ping", { timeout: 2500 });
       this.isBinanceAvailable = response.status === 200;
     } catch (error) {
       this.isBinanceAvailable = false;
@@ -187,327 +364,100 @@ export class MarketService {
     return this.isBinanceAvailable;
   }
 
-  /**
-   * PROVIDER 1: Binance REST API
-   */
-  private static async fetchBinanceCrypto(
-    symbol: string,
-    interval: string,
-    limit: number
-  ): Promise<Candle[]> {
-    const isAvailable = await this.checkBinanceAvailability();
-    if (!isAvailable) {
-      throw new Error('Binance API is currently unavailable');
-    }
-
-    const intervalMap: Record<string, string> = {
-      '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-      '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h',
-      '8h': '8h', '12h': '12h', '1d': '1d', '3d': '3d',
-      '1w': '1w', '1M': '1M'
-    };
-    
-    const binanceInterval = intervalMap[interval] || '1h';
-    let binanceSymbol = symbol.replace('/', '').toUpperCase();
-    
-    const hasQuote = ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH'].some(q => binanceSymbol.endsWith(q));
-    if (!hasQuote) {
+  /** Normalizes a raw symbol into the USDT-quoted Binance pair form. */
+  private static toBinanceSymbol(symbol: string): string {
+    let binanceSymbol = symbol.replace("/", "").toUpperCase();
+    if (!["USDT", "BUSD", "USDC", "BTC", "ETH"].some((q) => binanceSymbol.endsWith(q))) {
       binanceSymbol = `${binanceSymbol}USDT`;
     }
-
-    const symbolsToTry = [
-      binanceSymbol,
-      binanceSymbol.replace('USDT', ''),
-      binanceSymbol.replace('BUSD', 'USDT'),
-      binanceSymbol.replace('USDC', 'USDT'),
-    ];
-
-    const uniqueSymbols = [...new Set(symbolsToTry)]
-      .filter(s => s.length > 0)
-      .map(s => s.endsWith('USDT') ? s : `${s}USDT`);
-
-    let lastError: Error | null = null;
-
-    for (const trySymbol of uniqueSymbols) {
-      try {
-        console.log(`[Binance] Fetching ${trySymbol} ${binanceInterval}...`);
-        
-        const response = await axios.get('https://api.binance.com/api/v3/klines', {
-          params: {
-            symbol: trySymbol,
-            interval: binanceInterval,
-            limit: Math.min(limit, 500)
-          },
-          timeout: 5000,
-          headers: {
-            'Accept-Encoding': 'gzip'
-          }
-        });
-
-        if (!Array.isArray(response.data) || response.data.length === 0) {
-          throw new Error('No data from Binance');
-        }
-
-        const candles = response.data.map((kline: any[]) => ({
-          datetime: new Date(kline[0]).toISOString(),
-          open: parseFloat(kline[1]),
-          high: parseFloat(kline[2]),
-          low: parseFloat(kline[3]),
-          close: parseFloat(kline[4]),
-          volume: parseFloat(kline[5])
-        }));
-
-        console.log(`[Binance] Successfully fetched ${candles.length} candles for ${trySymbol}`);
-        return candles;
-
-      } catch (error: any) {
-        lastError = error;
-        console.warn(`[Binance] Failed for ${trySymbol}:`, error.message);
-        continue;
-      }
-    }
-
-    throw new Error(`All Binance attempts failed: ${lastError?.message}`);
+    return binanceSymbol;
   }
 
-  /**
-   * PROVIDER 2: CoinCap API (No API Key Required)
-   */
-  private static async fetchCoinCapCrypto(
-    symbol: string,
-    interval: string,
-    limit: number
-  ): Promise<Candle[]> {
-    const intervalMap: Record<string, string> = {
-      '1m': 'm1', '5m': 'm5', '15m': 'm15', '30m': 'm30',
-      '1h': 'h1', '2h': 'h2', '4h': 'h4', '6h': 'h6',
-      '12h': 'h12', '1d': 'd1', '1w': 'w1', '1M': 'M1'
-    };
-    
-    const coinCapInterval = intervalMap[interval] || 'h1';
-    
-    const coinMap: Record<string, string> = {
-      'BTC': 'bitcoin',
-      'ETH': 'ethereum',
-      'BNB': 'binance-coin',
-      'SOL': 'solana',
-      'ADA': 'cardano',
-      'XRP': 'ripple',
-      'DOGE': 'dogecoin',
-      'DOT': 'polkadot',
-      'AVAX': 'avalanche-2',
-      'MATIC': 'matic-network',
-      'LINK': 'chainlink',
-      'UNI': 'uniswap',
-      'ATOM': 'cosmos',
-      'LTC': 'litecoin',
-      'BCH': 'bitcoin-cash',
-      'NEAR': 'near',
-      'ALGO': 'algorand',
-      'VET': 'vechain',
-      'ICP': 'internet-computer',
-      'FIL': 'filecoin',
-      'HBAR': 'hedera-hashgraph',
-      'ETC': 'ethereum-classic',
-      'XLM': 'stellar',
-      'STX': 'blockstack',
-      'RNDR': 'render-token',
-      'MKR': 'maker',
-      'AAVE': 'aave',
-      'CRV': 'curve-dao-token',
-      'APE': 'apecoin',
-      'QNT': 'quant-network'
-    };
+  private static readonly BINANCE_INTERVAL_MAP: Record<string, string> = {
+    "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "1d": "1d",
+    "1w": "1w", "1M": "1M",
+  };
 
-    let baseSymbol = symbol;
-    for (const quote of ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH']) {
-      if (baseSymbol.endsWith(quote)) {
-        baseSymbol = baseSymbol.replace(quote, '');
-        break;
-      }
-    }
+  private static async fetchBinanceCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const isAvailable = await this.checkBinanceAvailability();
+    if (!isAvailable) throw new Error("Binance API unavailable");
 
-    const coinId = coinMap[baseSymbol] || baseSymbol.toLowerCase();
-    
-    try {
-      console.log(`[CoinCap] Fetching ${coinId} with interval ${coinCapInterval}...`);
-      
-      const response = await axios.get(`https://api.coincap.io/v2/assets/${coinId}/history`, {
-        params: {
-          interval: coinCapInterval,
-          limit: Math.min(limit, 2000)
-        },
-        timeout: 5000,
-        headers: {
-          'Accept-Encoding': 'gzip'
-        }
-      });
+    const binanceInterval = this.BINANCE_INTERVAL_MAP[interval] || "1h";
+    const binanceSymbol = this.toBinanceSymbol(symbol);
 
-      if (!response.data || !response.data.data || !Array.isArray(response.data.data)) {
-        throw new Error('Invalid response from CoinCap');
-      }
+    const response = await axios.get("https://api.binance.com/api/v3/klines", {
+      params: { symbol: binanceSymbol, interval: binanceInterval, limit: Math.min(limit, 500) },
+      timeout: 3500,
+    });
 
-      const data = response.data.data;
-      
-      let prevPrice = parseFloat(data[0]?.priceUsd || 0);
-      
-      const candles = data.map((item: any, index: number) => {
-        const currentPrice = parseFloat(item.priceUsd);
-        const open = index === 0 ? currentPrice : prevPrice;
-        const close = currentPrice;
-        const spread = Math.abs(close - open) + (currentPrice * 0.001);
-        const high = Math.max(open, close) + (spread * 0.4);
-        const low = Math.min(open, close) - (spread * 0.4);
-        
-        prevPrice = close;
-        
-        return {
-          datetime: new Date(item.time).toISOString(),
-          open: Number(open.toFixed(2)),
-          high: Number(high.toFixed(2)),
-          low: Number(low.toFixed(2)),
-          close: Number(close.toFixed(2)),
-          volume: 0,
-        };
-      });
-
-      console.log(`[CoinCap] Successfully fetched ${candles.length} candles for ${symbol}`);
-      return candles;
-
-    } catch (error: any) {
-      throw new Error(`CoinCap failed: ${error.message}`);
-    }
+    return response.data.map((kline: any[]) => ({
+      datetime: new Date(kline[0]).toISOString(),
+      open: parseFloat(kline[1]),
+      high: parseFloat(kline[2]),
+      low: parseFloat(kline[3]),
+      close: parseFloat(kline[4]),
+      volume: parseFloat(kline[5]),
+    }));
   }
 
-  /**
-   * PROVIDER 3: Kraken API (No API Key Required)
-   */
-  private static async fetchKrakenCrypto(
-    symbol: string,
-    interval: string,
-    limit: number
-  ): Promise<Candle[]> {
-    const intervalMap: Record<string, string> = {
-      '1m': '1', '5m': '5', '15m': '15', '30m': '30',
-      '1h': '60', '2h': '120', '4h': '240', '6h': '360',
-      '12h': '720', '1d': '1440', '1w': '10080', '1M': '43200'
+  private static async fetchKrakenCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const { base, quote } = this.parseSymbol(symbol);
+    const krakenBase = base === "BTC" ? "XBT" : base;
+    const krakenQuote = quote === "USDT" ? "USD" : quote;
+    const krakenPair = `${krakenBase}${krakenQuote}`;
+
+    const intervalMinutesMap: Record<string, number> = {
+      "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440,
     };
-    
-    const krakenInterval = intervalMap[interval] || '60';
-    
-    // Kraken uses XBT for BTC
-    let krakenSymbol = symbol.replace('/', '').toUpperCase();
-    if (krakenSymbol.startsWith('BTC')) {
-      krakenSymbol = `XBT${krakenSymbol.replace('BTC', '')}`;
+
+    const response = await axios.get("https://api.kraken.com/0/public/OHLC", {
+      params: { pair: krakenPair, interval: intervalMinutesMap[interval] || 60 },
+      timeout: 3500,
+    });
+
+    if (response.data?.error?.length > 0) {
+      throw new Error(`Kraken error: ${response.data.error.join(", ")}`);
     }
-    
-    // Kraken expects USD instead of USDT
-    krakenSymbol = krakenSymbol.replace('USDT', 'USD');
-    krakenSymbol = krakenSymbol.replace('BUSD', 'USD');
-    krakenSymbol = krakenSymbol.replace('USDC', 'USD');
-    
-    try {
-      console.log(`[Kraken] Fetching ${krakenSymbol} with interval ${krakenInterval}...`);
-      
-      const response = await axios.get('https://api.kraken.com/0/public/OHLC', {
-        params: {
-          pair: krakenSymbol,
-          interval: krakenInterval,
-          since: Math.floor(Date.now() / 1000) - (limit * 60 * parseInt(krakenInterval))
-        },
-        timeout: 5000,
-        headers: {
-          'Accept-Encoding': 'gzip'
-        }
-      });
 
-      if (!response.data || !response.data.result || !response.data.result[krakenSymbol]) {
-        throw new Error('Invalid response from Kraken');
-      }
+    const resultKeys = Object.keys(response.data?.result || {}).filter((k) => k !== "last");
+    if (!resultKeys.length) throw new Error("Kraken empty result set");
 
-      const ohlcData = response.data.result[krakenSymbol];
-      
-      if (!Array.isArray(ohlcData) || ohlcData.length === 0) {
-        throw new Error('No data from Kraken');
-      }
-
-      // Kraken returns: [time, open, high, low, close, vwap, volume, count]
-      const candles = ohlcData.slice(-limit).map((item: any[]) => ({
-        datetime: new Date(item[0] * 1000).toISOString(),
-        open: parseFloat(item[1]),
-        high: parseFloat(item[2]),
-        low: parseFloat(item[3]),
-        close: parseFloat(item[4]),
-        volume: parseFloat(item[6])
-      }));
-
-      console.log(`[Kraken] Successfully fetched ${candles.length} candles for ${symbol}`);
-      return candles;
-
-    } catch (error: any) {
-      throw new Error(`Kraken failed: ${error.message}`);
-    }
+    const ohlcData = response.data.result[resultKeys[0]];
+    return ohlcData.slice(-limit).map((item: any[]) => ({
+      datetime: new Date(item[0] * 1000).toISOString(),
+      open: parseFloat(item[1]),
+      high: parseFloat(item[2]),
+      low: parseFloat(item[3]),
+      close: parseFloat(item[4]),
+      volume: parseFloat(item[6]),
+    }));
   }
 
-  /**
-   * PROVIDER 4: Bitfinex API (No API Key Required)
-   */
-  private static async fetchBitfinexCrypto(
-    symbol: string,
-    interval: string,
-    limit: number
-  ): Promise<Candle[]> {
-    const intervalMap: Record<string, string> = {
-      '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-      '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h',
-      '12h': '12h', '1d': '1D', '1w': '7D', '1M': '30D'
-    };
-    
-    const bitfinexInterval = intervalMap[interval] || '1h';
-    let bitfinexSymbol = symbol.replace('/', '').toUpperCase();
-    
-    // Bitfinex uses tBTCUSD format
-    bitfinexSymbol = `t${bitfinexSymbol}`;
-    
-    try {
-      console.log(`[Bitfinex] Fetching ${bitfinexSymbol} with interval ${bitfinexInterval}...`);
-      
-      const response = await axios.get(`https://api-pub.bitfinex.com/v2/candles/trade:${bitfinexInterval}:${bitfinexSymbol}/hist`, {
-        params: {
-          limit: Math.min(limit, 10000),
-          sort: 1 // Ascending
-        },
-        timeout: 5000,
-        headers: {
-          'Accept-Encoding': 'gzip'
-        }
-      });
+  private static async fetchBitfinexCrypto(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const { base, quote } = this.parseSymbol(symbol);
+    const bitfinexQuote = quote === "USDT" ? "UST" : quote;
+    const bitfinexSymbol = `t${base}${bitfinexQuote}`;
 
-      if (!Array.isArray(response.data) || response.data.length === 0) {
-        throw new Error('Invalid response from Bitfinex');
-      }
+    const response = await axios.get(`https://api-pub.bitfinex.com/v2/candles/trade:1h:${bitfinexSymbol}/hist`, {
+      params: { limit: Math.min(limit, 500), sort: 1 },
+      timeout: 3500,
+    });
 
-      // Bitfinex returns: [timestamp, open, close, high, low, volume]
-      const candles = response.data.map((item: any[]) => ({
-        datetime: new Date(item[0]).toISOString(),
-        open: parseFloat(item[1]),
-        high: parseFloat(item[3]),
-        low: parseFloat(item[4]),
-        close: parseFloat(item[2]),
-        volume: parseFloat(item[5])
-      }));
-
-      console.log(`[Bitfinex] Successfully fetched ${candles.length} candles for ${symbol}`);
-      return candles;
-
-    } catch (error: any) {
-      throw new Error(`Bitfinex failed: ${error.message}`);
+    if (!Array.isArray(response.data)) {
+      throw new Error("Invalid structure from Bitfinex");
     }
+
+    return response.data.map((item: any[]) => ({
+      datetime: new Date(item[0]).toISOString(),
+      open: parseFloat(item[1]),
+      high: parseFloat(item[3]),
+      low: parseFloat(item[4]),
+      close: parseFloat(item[2]),
+      volume: parseFloat(item[5]),
+    }));
   }
 
-  /**
-   * Get historical klines in a simplified format
-   */
   public static async getHistoricalKlines(
     symbol: string = "BTCUSDT",
     interval: string = "1h",
@@ -524,123 +474,184 @@ export class MarketService {
   }
 
   /**
- * Fetches candles strictly older than `beforeTimeSeconds` — used for
- * infinite-scroll-style history loading when the user pans left past
- * the start of what's currently loaded. Binance-only for now since it's
- * the only provider whose klines endpoint supports `endTime` pagination
- * cleanly; other providers return an empty array rather than duplicate
- * or wrong data.
- */
-public static async getOlderKlines(
-  symbol: string,
-  interval: string,
-  beforeTimeSeconds: number,
-  limit: number = 200
-): Promise<Candle[]> {
-  const formattedSymbol = symbol.trim().toUpperCase();
-  try {
-    if (this.isCryptoSymbol(formattedSymbol)) {
-      return await this.fetchBinanceCryptoBefore(formattedSymbol, interval, beforeTimeSeconds, limit);
-    }
-    console.warn(`[MarketService] Older-history pagination not yet supported for non-crypto symbol ${formattedSymbol}`);
-    return [];
-  } catch (error: any) {
-    console.error(`[MarketService] Failed to fetch older klines for ${formattedSymbol}:`, error.message);
-    return [];
-  }
-}
-
-private static async fetchBinanceCryptoBefore(
-  symbol: string,
-  interval: string,
-  beforeTimeSeconds: number,
-  limit: number
-): Promise<Candle[]> {
-  const intervalMap: Record<string, string> = {
-    '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-    '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h',
-    '8h': '8h', '12h': '12h', '1d': '1d', '3d': '3d',
-    '1w': '1w', '1M': '1M'
-  };
-  const binanceInterval = intervalMap[interval] || '1h';
-
-  let binanceSymbol = symbol.replace('/', '').toUpperCase();
-  const hasQuote = ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH'].some((q) => binanceSymbol.endsWith(q));
-  if (!hasQuote) binanceSymbol = `${binanceSymbol}USDT`;
-
-  const response = await axios.get('https://api.binance.com/api/v3/klines', {
-    params: {
-      symbol: binanceSymbol,
-      interval: binanceInterval,
-      endTime: beforeTimeSeconds * 1000 - 1, // exclusive upper bound, in ms
-      limit: Math.min(limit, 500),
-    },
-    timeout: 5000,
-    headers: { 'Accept-Encoding': 'gzip' },
-  });
-
-  if (!Array.isArray(response.data)) {
-    throw new Error('Invalid response from Binance');
-  }
-
-  return response.data.map((kline: any[]) => ({
-    datetime: new Date(kline[0]).toISOString(),
-    open: parseFloat(kline[1]),
-    high: parseFloat(kline[2]),
-    low: parseFloat(kline[3]),
-    close: parseFloat(kline[4]),
-    volume: parseFloat(kline[5]),
-  }));
-}
-
-/**
- * Same shape as getHistoricalKlines but for the "load more history"
- * pagination path.
- */
-public static async getOlderHistoricalKlines(
-  symbol: string,
-  interval: string,
-  beforeTimeSeconds: number,
-  limit: number = 200
-): Promise<any[]> {
-  const candles = await this.getOlderKlines(symbol, interval, beforeTimeSeconds, limit);
-  return candles.map((c: Candle) => ({
-    time: Math.floor(new Date(c.datetime).getTime() / 1000),
-    open: c.open,
-    high: c.high,
-    low: c.low,
-    close: c.close,
-  }));
-}
-
-  /**
-   * Clear cache
+   * Fetches candles strictly older than `beforeTimeSeconds` — used for the
+   * "pan back in time" pagination path on the chart.
    */
+  public static async getOlderKlines(
+    symbol: string,
+    interval: string,
+    beforeTimeSeconds: number,
+    limit: number = 200
+  ): Promise<Candle[]> {
+    const formattedSymbol = symbol.trim().toUpperCase();
+    try {
+      if (this.isCryptoSymbol(formattedSymbol)) {
+        return await this.fetchBinanceCryptoBefore(formattedSymbol, interval, beforeTimeSeconds, limit);
+      }
+      console.warn(`[MarketService] Older-history pagination not yet supported for ${formattedSymbol} (index/forex)`);
+      return [];
+    } catch (error: any) {
+      console.error(`[MarketService] Failed to fetch older klines for ${formattedSymbol}:`, error.message);
+      return [];
+    }
+  }
+
+  private static async fetchBinanceCryptoBefore(
+    symbol: string,
+    interval: string,
+    beforeTimeSeconds: number,
+    limit: number
+  ): Promise<Candle[]> {
+    const binanceInterval = this.BINANCE_INTERVAL_MAP[interval] || "1h";
+    const binanceSymbol = this.toBinanceSymbol(symbol);
+    const endTimeMs = beforeTimeSeconds * 1000 - 1;
+
+    // First try Binance Vision API (unblocked)
+    try {
+      const response = await axios.get("https://data-api.binance.vision/api/v3/klines", {
+        params: {
+          symbol: binanceSymbol,
+          interval: binanceInterval,
+          endTime: endTimeMs,
+          limit: Math.min(limit, 500),
+        },
+        timeout: 4000,
+      });
+
+      if (Array.isArray(response.data) && response.data.length > 0) {
+        return response.data.map((kline: any[]) => ({
+          datetime: new Date(kline[0]).toISOString(),
+          open: parseFloat(kline[1]),
+          high: parseFloat(kline[2]),
+          low: parseFloat(kline[3]),
+          close: parseFloat(kline[4]),
+          volume: parseFloat(kline[5]),
+        }));
+      }
+    } catch (e) {
+      console.warn("[MarketService] BinanceVision fetch older klines failed, attempting standard API...");
+    }
+
+    // Fallback to standard Binance API
+    const response = await axios.get("https://api.binance.com/api/v3/klines", {
+      params: {
+        symbol: binanceSymbol,
+        interval: binanceInterval,
+        endTime: endTimeMs,
+        limit: Math.min(limit, 500),
+      },
+      timeout: 4000,
+    });
+
+    if (!Array.isArray(response.data)) {
+      throw new Error("Invalid response from Binance");
+    }
+
+    return response.data.map((kline: any[]) => ({
+      datetime: new Date(kline[0]).toISOString(),
+      open: parseFloat(kline[1]),
+      high: parseFloat(kline[2]),
+      low: parseFloat(kline[3]),
+      close: parseFloat(kline[4]),
+      volume: parseFloat(kline[5]),
+    }));
+  }
+
+  public static async getOlderHistoricalKlines(
+    symbol: string,
+    interval: string,
+    beforeTimeSeconds: number,
+    limit: number = 200
+  ): Promise<any[]> {
+    const candles = await this.getOlderKlines(symbol, interval, beforeTimeSeconds, limit);
+    return candles.map((c: Candle) => ({
+      time: Math.floor(new Date(c.datetime).getTime() / 1000),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    }));
+  }
+
   public static clearCache(): void {
     this.cache.clear();
-    console.log('[Cache] Cleared');
   }
 }
 
 // ============================================
-// MARKET MATH SERVICE
+// MARKET MATH SERVICE (QUANT CALCULATIONS)
 // ============================================
 
 export class MarketMathService {
-  public static calculateRSI(closingPrice: number[], period: number = 14): number[] {
-    if (!closingPrice || closingPrice.length < period) return [];
-    return RSI.calculate({ values: closingPrice, period });
+  public static calculateRSI(closingPrices: number[], period: number = 14): number | null {
+    if (!closingPrices || closingPrices.length < period) return null;
+    const results = RSI.calculate({ values: closingPrices, period });
+    return results.length > 0 ? Number(results[results.length - 1].toFixed(2)) : null;
   }
 
-  public static calculateSMA(closingPrice: number[], period: number = 14): number[] {
-    if (!closingPrice || closingPrice.length < period) return [];
-    return SMA.calculate({ values: closingPrice, period });
+  public static calculateSMA(closingPrices: number[], period: number = 20): number | null {
+    if (!closingPrices || closingPrices.length < period) return null;
+    const results = SMA.calculate({ values: closingPrices, period });
+    return results.length > 0 ? Number(results[results.length - 1].toFixed(2)) : null;
   }
 
-  /**
-   * Average True Range — used to give the AI a real volatility unit
-   * instead of letting it guess stop distances from price alone.
-   */
+  public static calculateADX(candles: Candle[], period: number = 14): { adx: number; pdi: number; mdi: number } | null {
+    if (!candles || candles.length < period * 2) return null;
+
+    const highs = candles.map((c) => c.high);
+    const lows = candles.map((c) => c.low);
+    const closes = candles.map((c) => c.close);
+
+    const results = ADX.calculate({ high: highs, low: lows, close: closes, period });
+    if (!results || results.length === 0) return null;
+
+    const latest = results[results.length - 1];
+    return {
+      adx: Number(latest.adx.toFixed(2)),
+      pdi: Number(latest.pdi.toFixed(2)),
+      mdi: Number(latest.mdi.toFixed(2)),
+    };
+  }
+
+  public static calculateVWAP(candles: Candle[]): number | null {
+    if (!candles || candles.length === 0) return null;
+
+    let cumulativeTPV = 0;
+    let cumulativeVolume = 0;
+
+    for (const c of candles) {
+      const vol = c.volume && c.volume > 0 ? c.volume : 1;
+      const typicalPrice = (c.high + c.low + c.close) / 3;
+      cumulativeTPV += typicalPrice * vol;
+      cumulativeVolume += vol;
+    }
+
+    if (cumulativeVolume === 0) return null;
+    return Number((cumulativeTPV / cumulativeVolume).toFixed(2));
+  }
+
+  public static calculateBollingerBands(
+    candles: Candle[],
+    period: number = 20,
+    stdDev: number = 2
+  ): { upper: number; middle: number; lower: number; bandwidthPct: number } | null {
+    if (!candles || candles.length < period) return null;
+
+    const closes = candles.map((c) => c.close);
+    const results = BollingerBands.calculate({ period, stdDev, values: closes });
+    if (!results || results.length === 0) return null;
+
+    const latest = results[results.length - 1];
+    const bandwidth = ((latest.upper - latest.lower) / latest.middle) * 100;
+
+    return {
+      upper: Number(latest.upper.toFixed(2)),
+      middle: Number(latest.middle.toFixed(2)),
+      lower: Number(latest.lower.toFixed(2)),
+      bandwidthPct: Number(bandwidth.toFixed(2)),
+    };
+  }
+
   public static calculateATR(candles: Candle[], period: number = 14): number | null {
     if (!candles || candles.length < period + 1) return null;
 
@@ -657,198 +668,90 @@ export class MarketMathService {
     }
 
     const recent = trueRanges.slice(-period);
-    return Number((recent.reduce((a, b) => a + b, 0) / recent.length).toFixed(6));
+    return Number((recent.reduce((a, b) => a + b, 0) / recent.length).toFixed(2));
   }
 
-  /**
-   * Finds the most recent meaningful swing high/low over a lookback window.
-   * This is the real structural data the "discount/premium" logic in the
-   * AI prompt needs — without it, the model has nothing to check its
-   * discount/premium claims against and is effectively guessing.
-   */
-  public static findRecentSwingRange(
-    candles: Candle[],
-    lookback: number = 50
-  ): { swingHigh: number | null; swingLow: number | null } {
+  public static findRecentSwingRange(candles: Candle[], lookback: number = 50): { swingHigh: number | null; swingLow: number | null } {
     if (!candles || candles.length === 0) return { swingHigh: null, swingLow: null };
 
     const window = candles.slice(-lookback);
-    const swingHigh = Math.max(...window.map((c) => c.high));
-    const swingLow = Math.min(...window.map((c) => c.low));
+    return {
+      swingHigh: Number(Math.max(...window.map((c) => c.high)).toFixed(2)),
+      swingLow: Number(Math.min(...window.map((c) => c.low)).toFixed(2)),
+    };
+  }
+
+  public static getComprehensiveTelemetry(candles: Candle[]): IndicatorTelemetry {
+    const closes = candles.map((c) => c.close);
 
     return {
-      swingHigh: Number(swingHigh.toFixed(6)),
-      swingLow: Number(swingLow.toFixed(6)),
+      rsi: this.calculateRSI(closes),
+      sma: this.calculateSMA(closes, 20),
+      atr: this.calculateATR(candles),
+      adx: this.calculateADX(candles),
+      vwap: this.calculateVWAP(candles),
+      bollingerBands: this.calculateBollingerBands(candles),
+      swingRange: this.findRecentSwingRange(candles),
     };
   }
 }
 
 // ============================================
-// CRYPTO WEBSOCKET SERVICE (Binance)
+// CRYPTO WEBSOCKET SERVICE
 // ============================================
 
 export class CryptoWsService {
   private static ws: WebSocket | null = null;
   private static activeStreams: Set<string> = new Set();
   private static subscribers: Map<string, (candle: WebSocketCandle) => void> = new Map();
-  private static reconnectTimeout: NodeJS.Timeout | null = null;
-  private static isConnecting: boolean = false;
-  private static reconnectAttempts: number = 0;
-  private static MAX_RECONNECT_ATTEMPTS = 5;
 
-  public static subscribeToKline(
-    symbol: string,
-    interval: string,
-    callback: (candle: WebSocketCandle) => void
-  ): void {
-    const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
+  public static subscribeToKline(symbol: string, interval: string, callback: (candle: WebSocketCandle) => void): void {
+    if (MarketService.isIndexSymbol(symbol)) return;
+
+    const cleanSymbol = symbol.replace("/", "").toLowerCase();
+    const streamName = `${cleanSymbol}@kline_${interval}`;
     this.subscribers.set(streamName, callback);
 
-    if (this.activeStreams.has(streamName)) {
-      return;
-    }
-
+    if (this.activeStreams.has(streamName)) return;
     this.activeStreams.add(streamName);
 
-    if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
       this.connectMasterSocket();
-    } else if (this.ws.readyState === WebSocket.OPEN) {
-      this.sendSubscribe(streamName);
-    }
-  }
-
-  private static sendSubscribe(streamName: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    
-    try {
-      const subPayload = JSON.stringify({
-        method: "SUBSCRIBE",
-        params: [streamName],
-        id: Date.now(),
-      });
-      this.ws.send(subPayload);
-      console.log(`[Crypto WS]: Subscribed to ${streamName}`);
-    } catch (err: any) {
-      console.error("[Crypto WS Subscribe Error]:", err.message);
     }
   }
 
   private static connectMasterSocket(): void {
-    if (this.isConnecting) return;
     if (this.activeStreams.size === 0) return;
 
-    this.isConnecting = true;
+    const streamName = Array.from(this.activeStreams)[0];
+    this.ws = new WebSocket(`wss://stream.binance.com:9443/ws/${streamName}`);
 
-    try {
-      const streamName = Array.from(this.activeStreams)[0];
-      const url = `wss://stream.binance.com:9443/ws/${streamName}`;
+    this.ws.on("message", (data: WebSocket.Data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.data && parsed.data.k) {
+          const k = parsed.data.k;
+          const formattedCandle: WebSocketCandle = {
+            timestamp: k.t,
+            open: parseFloat(k.o),
+            high: parseFloat(k.h),
+            low: parseFloat(k.l),
+            close: parseFloat(k.c),
+            volume: parseFloat(k.v),
+            isFinal: k.x,
+          };
 
-      console.log(`[Crypto WS]: Connecting to ${url}`);
-      this.ws = new WebSocket(url);
-
-      this.ws.on("open", () => {
-        console.log(`[Crypto WS]: Connected successfully`);
-        this.isConnecting = false;
-        this.reconnectAttempts = 0;
-      });
-
-      this.ws.on("message", (data: WebSocket.Data) => {
-        try {
-          const parsed = JSON.parse(data.toString());
-          if (parsed.data && parsed.data.k) {
-            const kline = parsed.data.k;
-            const formattedCandle: WebSocketCandle = {
-              timestamp: kline.t,
-              open: parseFloat(kline.o),
-              high: parseFloat(kline.h),
-              low: parseFloat(kline.l),
-              close: parseFloat(kline.c),
-              volume: parseFloat(kline.v),
-              isFinal: kline.x,
-            };
-
-            for (const [stream, callback] of this.subscribers) {
-              if (stream.includes(parsed.data.s?.toLowerCase() || '')) {
-                callback(formattedCandle);
-                break;
-              }
+          for (const [stream, callback] of this.subscribers) {
+            if (stream.includes(parsed.data.s?.toLowerCase() || "")) {
+              callback(formattedCandle);
+              break;
             }
           }
-        } catch (err) {
-          console.error("[Crypto WS Message Error]:", err);
         }
-      });
-
-      this.ws.on("close", (code, reason) => {
-        console.warn(`[Crypto WS]: Connection closed (${code}). Reconnecting...`);
-        this.isConnecting = false;
-        this.ws = null;
-        this.scheduleReconnect();
-      });
-
-      this.ws.on("error", (err: any) => {
-        console.error("[Crypto WS Error]:", err.message);
-        this.isConnecting = false;
-        if (this.ws) {
-          this.ws.terminate();
-          this.ws = null;
-        }
-        this.scheduleReconnect();
-      });
-
-      setTimeout(() => {
-        if (this.isConnecting) {
-          console.warn("[Crypto WS]: Connection timeout");
-          this.ws?.close();
-          this.ws = null;
-          this.isConnecting = false;
-          this.scheduleReconnect();
-        }
-      }, 10000);
-
-    } catch (err: any) {
-      console.error("[Crypto WS Connection Exception]:", err.message);
-      this.isConnecting = false;
-      this.scheduleReconnect();
-    }
-  }
-
-  private static scheduleReconnect(): void {
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-    }
-
-    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      console.warn("[Crypto WS]: Max reconnect attempts reached. Stopping.");
-      return;
-    }
-
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-    this.reconnectAttempts++;
-
-    console.log(`[Crypto WS]: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`);
-
-    this.reconnectTimeout = setTimeout(() => {
-      if (this.activeStreams.size > 0) {
-        this.connectMasterSocket();
+      } catch (err) {
+        console.error("[Crypto WS Error]:", err);
       }
-    }, delay);
-  }
-
-  public static unsubscribe(symbol: string, interval: string): void {
-    const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
-    this.activeStreams.delete(streamName);
-    this.subscribers.delete(streamName);
-    
-    if (this.activeStreams.size === 0 && this.ws) {
-      this.ws.close();
-      this.ws = null;
-      this.reconnectAttempts = 0;
-      if (this.reconnectTimeout) {
-        clearTimeout(this.reconnectTimeout);
-        this.reconnectTimeout = null;
-      }
-    }
+    });
   }
 }
 
@@ -857,138 +760,68 @@ export class CryptoWsService {
 // ============================================
 
 export class MarketOrchestrator {
-  private static activeCryptoStreams: Set<string> = new Set();
-
-  public static async getDynamicMarketData(
-    symbol: string,
-    interval: string = "1h"
-  ): Promise<MarketDataPayload> {
-    const formattedSymbol = symbol.trim().toUpperCase();
+  public static async getDynamicMarketData(symbol: string, interval: string = "1h"): Promise<MarketDataPayload> {
+    const formattedSymbol = symbol.replace("/", "").trim().toUpperCase();
     const cleanRedisKey = `orion:live:${formattedSymbol}:${interval}`;
 
-    // Try cache
     try {
       const cachedData = await redisClient.get(cleanRedisKey);
       if (cachedData) {
         const parsed = JSON.parse(cachedData);
         if (parsed && Array.isArray(parsed.candles) && parsed.candles.length > 0) {
-          this.ensureBackgroundTracking(formattedSymbol, interval);
           return parsed;
         }
       }
     } catch (err) {
-      console.warn("[MarketOrchestrator] Cache read failed:", err);
+      console.warn("[MarketOrchestrator] Cache read skipped:", err);
     }
 
-    // Fetch fresh data
-    let candles: Candle[] = [];
-    let headlines: any[] = [];
+    const [candles, headlines] = await Promise.all([
+      MarketService.getCandles(formattedSymbol, interval, 50),
+      NewsService.fetchNews(formattedSymbol).catch(() => []),
+    ]);
 
-    try {
-      [candles, headlines] = await Promise.all([
-        MarketService.getCandles(formattedSymbol, interval, 50),
-        NewsService.fetchNews(formattedSymbol).catch(() => [] as any[]),
-      ]);
-    } catch (error) {
-      console.error("[MarketOrchestrator] Error fetching data:", error);
-    }
-
-    // If no candles, throw error (NO MOCK DATA)
     if (!candles || candles.length === 0) {
       throw new Error(`No data available for ${formattedSymbol}`);
     }
 
     const latestCandle = candles[candles.length - 1];
+    const assetType = MarketService.isIndexSymbol(formattedSymbol)
+      ? "index"
+      : MarketService.isCryptoSymbol(formattedSymbol)
+      ? "crypto"
+      : "forex";
 
     const marketPayload: MarketDataPayload = {
       symbol: formattedSymbol,
       interval,
-      assetType: "crypto",
+      assetType,
       latestPrice: latestCandle.close,
-      candles: candles,
+      candles,
       headlines: headlines || [],
       lastUpdated: new Date().toISOString(),
     };
 
-    // Cache asynchronously
     try {
-      await redisClient.set(cleanRedisKey, JSON.stringify(marketPayload));
+      await redisClient.set(cleanRedisKey, JSON.stringify(marketPayload), "EX", 30);
     } catch (err) {
-      console.warn("[MarketOrchestrator] Cache write failed:", err);
+      console.warn("[MarketOrchestrator] Cache write skipped:", err);
     }
 
-    this.ensureBackgroundTracking(formattedSymbol, interval);
     return marketPayload;
-  }
-
-  private static ensureBackgroundTracking(symbol: string, interval: string): void {
-    const streamId = `${symbol}:${interval}`;
-    if (!this.activeCryptoStreams.has(streamId)) {
-      console.log(`[Market Orchestrator]: Starting WebSocket for ${symbol}`);
-
-      CryptoWsService.subscribeToKline(
-        symbol,
-        interval,
-        async (liveCandle: WebSocketCandle) => {
-          try {
-            const chartCandle = {
-              time: Math.floor(liveCandle.timestamp / 1000),
-              open: liveCandle.open,
-              high: liveCandle.high,
-              low: liveCandle.low,
-              close: liveCandle.close,
-            };
-
-            await redisClient.publish(
-              "ORION_KLINES",
-              JSON.stringify({ symbol, interval, candle: chartCandle })
-            );
-
-            const redisKey = `orion:live:${symbol}:${interval}`;
-            const cachedPayloadStr = await redisClient.get(redisKey);
-
-            if (cachedPayloadStr) {
-              const payload = JSON.parse(cachedPayloadStr);
-              if (payload && Array.isArray(payload.candles) && payload.candles.length > 0) {
-                payload.latestPrice = liveCandle.close ?? payload.latestPrice;
-                payload.lastUpdated = new Date().toISOString();
-
-                const lastCandle = payload.candles[payload.candles.length - 1];
-                if (lastCandle) {
-                  lastCandle.open = liveCandle.open;
-                  lastCandle.high = liveCandle.high;
-                  lastCandle.low = liveCandle.low;
-                  lastCandle.close = liveCandle.close;
-                }
-
-                await redisClient.set(redisKey, JSON.stringify(payload));
-              }
-            }
-          } catch (err) {
-            console.error("[WebSocket Update Error]:", err);
-          }
-        }
-      );
-
-      this.activeCryptoStreams.add(streamId);
-    }
   }
 }
 
 // ============================================
-// FOREX PROVIDERS (Ready to plug in later)
+// FOREX / TWELVE DATA PROVIDER
 // ============================================
 
-/**
- * Twelve Data Forex Provider - Ready to use
- */
 export class TwelveDataForexProvider implements IForexProvider {
   private apiKey: string;
-  private baseUrl: string;
+  private baseUrl: string = "https://api.twelvedata.com";
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
-    this.baseUrl = "https://api.twelvedata.com";
   }
 
   getProviderName(): string {
@@ -1007,30 +840,25 @@ export class TwelveDataForexProvider implements IForexProvider {
           symbol: formattedSymbol,
           interval,
           outputsize: limit,
-          apikey: this.apiKey
+          apikey: this.apiKey,
         },
-        timeout: 5000
+        timeout: 5000,
       });
 
-      if (response.data.status === "error") {
-        throw new Error(response.data.message);
+      if (!response.data || !Array.isArray(response.data.values)) {
+        throw new Error("Invalid response from TwelveData");
       }
 
-      if (!response.data.values || !Array.isArray(response.data.values)) {
-        throw new Error("Invalid response from Twelve Data");
-      }
-
-      return response.data.values.map((item: any) => ({
-        datetime: item.datetime,
-        open: parseFloat(item.open),
-        high: parseFloat(item.high),
-        low: parseFloat(item.low),
-        close: parseFloat(item.close),
-        volume: parseFloat(item.volume || 0)
-      })).reverse();
-
+      return response.data.values.reverse().map((v: any) => ({
+        datetime: new Date(v.datetime).toISOString(),
+        open: parseFloat(v.open),
+        high: parseFloat(v.high),
+        low: parseFloat(v.low),
+        close: parseFloat(v.close),
+        volume: parseFloat(v.volume || 0),
+      }));
     } catch (error: any) {
-      throw new Error(`[TwelveData] Failed for ${symbol}: ${error.message}`);
+      throw new Error(`TwelveData failed for ${symbol}: ${error.message}`);
     }
   }
 }
@@ -1066,7 +894,7 @@ export class MarketWatchList {
     }
   }
 
-  public static async getUserWatchlist(userId: string | number): Promise<any[]> {
+  public static async getUserWatchlist(userId: string | any): Promise<any[]> {
     try {
       const query = `
         SELECT s.symbol, s.name, s.category, s.exchange 
@@ -1112,4 +940,4 @@ export class MarketWatchList {
       return false;
     }
   }
-}    
+}

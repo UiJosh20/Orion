@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { IChartApi, ISeriesApi, MouseEventParams, CandlestickData } from 'lightweight-charts';
+import { IChartApi, ISeriesApi, MouseEventParams } from 'lightweight-charts';
 
 interface RulerState {
   active: boolean;
@@ -13,21 +13,6 @@ interface RulerState {
   currentY: number;
   currentPrice: number;
   currentLogical: number;
-  snapMode: boolean; // true while Shift is held during the drag
-}
-
-function getSnappedOHLC(
-  candle: CandlestickData, 
-  mousePrice: number, 
-  seriesInstance: ISeriesApi<'Candlestick'>
-): { price: number; y: number } | null {
-  const levels = [candle.high, candle.low, candle.open, candle.close];
-  const closestPrice = levels.reduce((prev, curr) => 
-    Math.abs(curr - mousePrice) < Math.abs(prev - mousePrice) ? curr : prev
-  );
-  const y = seriesInstance.priceToCoordinate(closestPrice);
-  if (y === null) return null;
-  return { price: closestPrice, y };
 }
 
 export function RulerOverlay({
@@ -41,9 +26,8 @@ export function RulerOverlay({
 }) {
   const [ruler, setRuler] = useState<RulerState | null>(null);
 
-  // Continuous crosshair tracking while dragging.
-  // snapMode = true -> snap X to bar center and Y to nearest OHLC level (old behavior).
-  // snapMode = false -> raw pixel/price tracking, like TradingView's default ruler.
+  // Always tracks the raw pixel/price under the cursor — no snapping to
+  // candle OHLC levels at any point.
   useEffect(() => {
     if (!chartInstance || !seriesInstance) return;
 
@@ -51,44 +35,27 @@ export function RulerOverlay({
       setRuler((prev) => {
         if (!prev || !prev.active || !param.point) return prev;
 
-        const timeScale:any = chartInstance.timeScale();
-        let currentX :any= param.point.x;
-        let currentY :any= param.point.y;
-        let currentPrice = seriesInstance.coordinateToPrice(param.point.y) ?? prev.currentPrice;
-        let currentLogical = param.logical !== undefined ? Math.round(param.logical) : prev.currentLogical;
+        const currentPrice = seriesInstance.coordinateToPrice(param.point.y) ?? prev.currentPrice;
+        const currentLogical = param.logical !== undefined ? param.logical : prev.currentLogical;
 
-        if (prev.snapMode) {
-          const candle = param.seriesData.get(seriesInstance) as CandlestickData | undefined;
-          if (candle && param.logical !== undefined) {
-            const snappedX = timeScale.logicalToCoordinate(currentLogical);
-            if (snappedX !== null) currentX = snappedX;
-
-            const mousePrice = seriesInstance.coordinateToPrice(param.point.y);
-            if (mousePrice !== null) {
-              const snapped = getSnappedOHLC(candle, mousePrice, seriesInstance);
-              if (snapped) {
-                currentY = snapped.y;
-                currentPrice = snapped.price;
-              }
-            }
-          }
-        }
-
-        return { ...prev, currentX, currentY, currentPrice, currentLogical };
+        return {
+          ...prev,
+          currentX: param.point.x,
+          currentY: param.point.y,
+          currentPrice,
+          currentLogical,
+        };
       });
     };
 
     chartInstance.subscribeCrosshairMove(handleCrosshairMove);
-    return () => {
-      chartInstance.unsubscribeCrosshairMove(handleCrosshairMove);
-    };
+    return () => chartInstance.unsubscribeCrosshairMove(handleCrosshairMove);
   }, [chartInstance, seriesInstance]);
 
   const handleMouseDown = useCallback((e: MouseEvent) => {
     if (!chartInstance || !seriesInstance || !containerRef.current) return;
 
-    if (!e.shiftKey && !e.altKey) {
-      // Plain click clears any locked measurement
+    if (!e.shiftKey) {
       setRuler(null);
       return;
     }
@@ -97,46 +64,21 @@ export function RulerOverlay({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const timeScale:any = chartInstance.timeScale();
+    const timeScale = chartInstance.timeScale();
     const logical = timeScale.coordinateToLogical(x);
     const mousePrice = seriesInstance.coordinateToPrice(y);
     if (mousePrice === null) return;
 
-    // Shift = snap-to-OHLC ruler, Alt = free pixel ruler
-    const snapMode = e.shiftKey;
-
-    let startX :any= x;
-    let startY :any= y;
-    let startPrice :any= mousePrice;
-    let startLogical = logical !== null ? Math.round(logical) : 0;
-
-    if (snapMode && logical !== null) {
-      const roundedLogical = Math.round(logical);
-      const snappedX = timeScale.logicalToCoordinate(roundedLogical);
-      const data = seriesInstance.data();
-      const candle = data[roundedLogical] as CandlestickData | undefined;
-
-      if (snappedX !== null) startX = snappedX;
-      if (candle) {
-        const snapped = getSnappedOHLC(candle, mousePrice, seriesInstance);
-        if (snapped) {
-          startY = snapped.y;
-          startPrice = snapped.price;
-        }
-      }
-    }
-
     setRuler({
       active: true,
-      startX,
-      startY,
-      startPrice,
-      startLogical,
-      currentX: startX,
-      currentY: startY,
-      currentPrice: startPrice,
-      currentLogical: startLogical,
-      snapMode,
+      startX: x,
+      startY: y,
+      startPrice: mousePrice,
+      startLogical: logical !== null ? logical : 0,
+      currentX: x,
+      currentY: y,
+      currentPrice: mousePrice,
+      currentLogical: logical !== null ? logical : 0,
     });
   }, [chartInstance, seriesInstance, containerRef]);
 
@@ -160,7 +102,7 @@ export function RulerOverlay({
 
   const priceDelta = ruler.currentPrice - ruler.startPrice;
   const percentChange = ruler.startPrice !== 0 ? ((priceDelta / ruler.startPrice) * 100).toFixed(2) : '0.00';
-  const barCount = Math.abs(ruler.currentLogical - ruler.startLogical) + 1;
+  const barCount = Math.round(Math.abs(ruler.currentLogical - ruler.startLogical)) + 1;
   const isPositive = priceDelta >= 0;
 
   const left = Math.min(ruler.startX, ruler.currentX);
