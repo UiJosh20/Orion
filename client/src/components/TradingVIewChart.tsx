@@ -83,7 +83,7 @@ function ChartContent() {
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [isEmpty, setIsEmpty] = useState<boolean>(false);
   
-  // ✅ FORCE RE-RENDER ON SCROLL TO MAINTAIN PINNING
+  // Force re-render on scroll to maintain pinning
   const [renderKey, setRenderKey] = useState(0);
 
   // User drawing state
@@ -199,14 +199,14 @@ function ChartContent() {
     };
   }, [isChartReady, isDrawMode, drawStep, userDraft, setActivePosition]);
 
-  // ✅ PERFECT PINNING: Re-render on every chart scroll and resize
+  // Perfect Pinning: Re-render on every chart scroll
   useEffect(() => {
     if (!isChartReady || !chartRef.current) return;
     
     const timeScale = chartRef.current.timeScale();
 
     const handleScroll = () => {
-      setRenderKey(prev => prev + 1); // Force recalculation of coordinates
+      setRenderKey(prev => prev + 1);
     };
 
     timeScale.subscribeVisibleLogicalRangeChange(handleScroll);
@@ -216,7 +216,7 @@ function ChartContent() {
     };
   }, [isChartReady]);
 
-  // ✅ FIXED: PHYSICAL RENDERING WITH PERFECT GRID PINNING
+  // ✅ Build-Safe Coordinate Extraction
   const calculatePositionOverlay = useCallback((position: TradePosition) => {
     if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current) return null;
     
@@ -224,9 +224,9 @@ function ChartContent() {
     const series = candlestickSeriesRef.current;
 
     let startTime = toUnixSeconds(position.time || Date.now());
-    let xStart = timeScale.timeToCoordinate(startTime);
+    let xStart:any = timeScale.timeToCoordinate(startTime);
 
-    // If time isn't found, calculate fallback to the right edge of the chart
+    // If time isn't found, fallback to the right edge of the chart
     if (xStart === null) {
       const visibleRange = timeScale.getVisibleLogicalRange();
       if (visibleRange) {
@@ -244,13 +244,16 @@ function ChartContent() {
     if (yEntry === null || yTarget === null || yStop === null) return null;
 
     const width = 180;
-    const x = typeof xStart === 'number' ? xStart : 0;
+    
+    // ✅ STRICT TYPE FIX: Convert all Lightweight Charts types to plain JS numbers
+    // Using Number() strips the branded 'Coordinate' type and ensures build passes
+    const x = Number(xStart);
+    const y = Number(Math.min(yEntry, yTarget, yStop));
 
     const minY = Math.min(yEntry, yTarget, yStop);
     const maxY = Math.max(yEntry, yTarget, yStop);
     const height = maxY - minY;
 
-    // Ensure side is always defined
     const side = position.side || (position.target > position.entry ? 'LONG' : 'SHORT');
     const targetIsAbove = side === 'LONG';
 
@@ -258,21 +261,21 @@ function ChartContent() {
 
     return {
       x,
-      y: minY,
+      y,
       width,
       height: finalHeight,
-      yEntry,
-      yTarget,
-      yStop,
+      yEntry: Number(yEntry),
+      yTarget: Number(yTarget),
+      yStop: Number(yStop),
       targetIsAbove,
       side,
       entry: position.entry,
       target: position.target,
       stopLoss: position.stopLoss,
     };
-  }, [renderKey]); // ✅ Depend on renderKey to recalculate on every scroll
+  }, [renderKey]);
 
-  // ✅ PHYSICAL RENDERING
+  // Render the DOM elements with perfect visual alignment
   const renderPositionOverlay = useCallback(() => {
     if (!activePosition) return null;
     
@@ -568,7 +571,7 @@ function ChartContent() {
       )}
 
       <div ref={chartContainerRef} className="w-full h-full flex-1 relative">
-        {/* ✅ The position overlay is pinned and recalculates on scroll */}
+        {/* Pin the position overlay ABOVE everything else */}
         {isChartReady && renderPositionOverlay()}
 
         {isChartReady && chartRef.current && candlestickSeriesRef.current && (
