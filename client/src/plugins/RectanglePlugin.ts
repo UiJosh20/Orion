@@ -6,132 +6,243 @@ import {
   SeriesAttachedParameter,
   Time,
   Coordinate,
+  MouseEventHandler,
 } from 'lightweight-charts';
 
-export interface RectangleOptions {
-  id?: string;
-  p1: { time: Time; price: number };
-  p2: { time: Time; price: number };
-  fillColor?: string;
-  borderColor?: string;
-  borderWidth?: number;
-  label?: string;
-  extendRight?: boolean;
+export interface PositionOptions {
+  id: string;
+  side: 'LONG' | 'SHORT';
+  entry: number;
+  target: number;
+  stopLoss: number;
+  startTime: Time;
+  durationBars?: number;
+  targetColor?: string;
+  targetBorderColor?: string;
+  stopColor?: string;
+  stopBorderColor?: string;
+  onCancel?: (id: string) => void;
 }
 
 type CanvasTarget = Parameters<IPrimitivePaneRenderer['draw']>[0];
 
-class RectanglePaneRenderer implements IPrimitivePaneRenderer {
+class PositionPaneRenderer implements IPrimitivePaneRenderer {
+  public closeButtonBounds: { x: number; y: number; width: number; height: number } | null = null;
+
   constructor(
-    private _p1: { x: Coordinate | null; y: Coordinate | null },
-    private _p2: { x: Coordinate | null; y: Coordinate | null },
-    private _options: Required<Omit<RectangleOptions, 'p1' | 'p2'>>
+    private _pEntry: { x: Coordinate | null; y: Coordinate | null },
+    private _pTarget: { y: Coordinate | null },
+    private _pStop: { y: Coordinate | null },
+    private _pEnd: { x: Coordinate | null },
+    private _options: PositionOptions
   ) {}
 
   draw(target: CanvasTarget) {
-    if (this._p1.y === null || this._p2.y === null) return;
+    if (!this._pEntry.x || !this._pEntry.y || !this._pTarget.y || !this._pStop.y || !this._pEnd.x) return;
 
-    // Handle off-screen X coordinates gracefully during panning
-    let x1 = this._p1.x;
-    let x2 = this._p2.x;
+    const yEntry = this._pEntry.y;
+    const yTarget = this._pTarget.y;
+    const yStop = this._pStop.y;
+    const xStart = this._pEntry.x;
+    const xEnd = this._pEnd.x;
 
-    if (x1 === null && x2 === null) return;
-    if (x1 === null) x1 = -2000 as Coordinate;
-    if (x2 === null) x2 = (this._options.extendRight ? 10000 : x1 + 500) as Coordinate;
+    if (isNaN(yEntry) || isNaN(yTarget) || isNaN(yStop)) return;
 
-    const minX = Math.min(x1, x2);
-    const minY = Math.min(this._p1.y, this._p2.y);
-    const width = Math.abs(x1 - x2);
-    const height = Math.abs(this._p1.y - this._p2.y);
-
-    target.useBitmapCoordinateSpace((scope: { context: CanvasRenderingContext2D; horizontalPixelRatio: number; verticalPixelRatio: number }) => {
+    target.useBitmapCoordinateSpace((scope) => {
       const ctx = scope.context;
-      const scaledX = minX * scope.horizontalPixelRatio;
-      const scaledY = minY * scope.verticalPixelRatio;
-      const scaledWidth = width * scope.horizontalPixelRatio;
-      const scaledHeight = height * scope.verticalPixelRatio;
+      const hRatio = scope.horizontalPixelRatio;
+      const vRatio = scope.verticalPixelRatio;
 
-      // Draw Fill
-      ctx.fillStyle = this._options.fillColor;
-      ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+      const scaledXStart = xStart * hRatio;
+      const scaledXEnd = xEnd * hRatio;
+      const scaledX = Math.min(scaledXStart, scaledXEnd);
+      const scaledWidth = Math.max(Math.abs(scaledXStart - scaledXEnd), 70 * hRatio);
 
-      // Draw Border
-      if (this._options.borderWidth > 0) {
-        ctx.strokeStyle = this._options.borderColor;
-        ctx.lineWidth = this._options.borderWidth * scope.verticalPixelRatio;
-        ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
-      }
+      const scaledYEntry = yEntry * vRatio;
+      const scaledYTarget = yTarget * vRatio;
+      const scaledYStop = yStop * vRatio;
 
-      // Draw Label
-      if (this._options.label) {
-        ctx.font = `${11 * scope.verticalPixelRatio}px monospace`;
-        ctx.fillStyle = this._options.borderColor;
-        ctx.fillText(this._options.label, scaledX + 8 * scope.horizontalPixelRatio, scaledY + 14 * scope.verticalPixelRatio);
-      }
+      // Target Box
+      const targetMinY = Math.min(scaledYEntry, scaledYTarget);
+      const targetHeight = Math.abs(scaledYEntry - scaledYTarget);
+      ctx.fillStyle = this._options.targetColor ?? 'rgba(38, 166, 154, 0.2)';
+      ctx.fillRect(scaledX, targetMinY, scaledWidth, targetHeight);
+      ctx.strokeStyle = this._options.targetBorderColor ?? '#26a69a';
+      ctx.lineWidth = 1 * vRatio;
+      ctx.strokeRect(scaledX, targetMinY, scaledWidth, targetHeight);
+
+      // Stop Loss Box
+      const stopMinY = Math.min(scaledYEntry, scaledYStop);
+      const stopHeight = Math.abs(scaledYEntry - scaledYStop);
+      ctx.fillStyle = this._options.stopColor ?? 'rgba(239, 83, 80, 0.2)';
+      ctx.fillRect(scaledX, stopMinY, scaledWidth, stopHeight);
+      ctx.strokeStyle = this._options.stopBorderColor ?? '#ef5350';
+      ctx.lineWidth = 1 * vRatio;
+      ctx.strokeRect(scaledX, stopMinY, scaledWidth, stopHeight);
+
+      // Entry Line
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.5 * vRatio;
+      ctx.beginPath();
+      ctx.moveTo(scaledX, scaledYEntry);
+      ctx.lineTo(scaledX + scaledWidth, scaledYEntry);
+      ctx.stroke();
+
+      // Metrics
+      const riskDist = Math.abs(this._options.entry - this._options.stopLoss);
+      const rewardDist = Math.abs(this._options.target - this._options.entry);
+      const rrRatio = riskDist > 0 ? (rewardDist / riskDist).toFixed(2) : '0.00';
+      const targetPct = ((rewardDist / this._options.entry) * 100).toFixed(2);
+      const stopPct = ((riskDist / this._options.entry) * 100).toFixed(2);
+
+      const fontSize = Math.max(9, 10 * vRatio);
+      ctx.font = `600 ${fontSize}px sans-serif`;
+      ctx.textBaseline = 'top';
+
+      ctx.fillStyle = '#10b981';
+      ctx.fillText(`Target: ${this._options.target.toFixed(2)} (+${targetPct}%)`, scaledX + 6 * hRatio, targetMinY + 6 * vRatio);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(`${this._options.side} @ ${this._options.entry.toFixed(2)} | R:R ${rrRatio}`, scaledX + 6 * hRatio, scaledYEntry - fontSize - 4 * vRatio);
+
+      ctx.fillStyle = '#ef4444';
+      ctx.fillText(`Stop: ${this._options.stopLoss.toFixed(2)} (-${stopPct}%)`, scaledX + 6 * hRatio, Math.max(scaledYEntry, scaledYStop) + 6 * vRatio);
+
+      // Cancel Button
+      const btnWidth = 18 * hRatio;
+      const btnHeight = 18 * vRatio;
+      const btnX = scaledX + scaledWidth - btnWidth - 6 * hRatio;
+      const btnY = scaledYEntry - btnHeight / 2;
+
+      ctx.fillStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.arc(btnX + btnWidth / 2, btnY + btnHeight / 2, btnWidth / 2, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1 * vRatio;
+      ctx.stroke();
+
+      ctx.fillStyle = '#f1f5f9';
+      ctx.font = `bold ${10 * vRatio}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('✕', btnX + btnWidth / 2, btnY + btnHeight / 2);
+
+      this.closeButtonBounds = {
+        x: btnX / hRatio,
+        y: btnY / vRatio,
+        width: btnWidth / hRatio,
+        height: btnHeight / vRatio,
+      };
     });
   }
 }
 
-class RectanglePaneView implements IPrimitivePaneView {
-  constructor(private _source: RectanglePlugin) {}
+class PositionPaneView implements IPrimitivePaneView {
+  private _renderer: PositionPaneRenderer | null = null;
+
+  constructor(private _source: PositionPlugin) {}
 
   zOrder(): PrimitivePaneViewZOrder {
-    return 'normal';
+    return 'top';
   }
 
   renderer(): IPrimitivePaneRenderer {
-    const p1 = this._source.getPointCoordinates(this._source.options.p1);
-    const p2 = this._source.getPointCoordinates(this._source.options.p2);
-    return new RectanglePaneRenderer(p1, p2, {
-      id: this._source.options.id ?? '',
-      fillColor: this._source.options.fillColor ?? 'rgba(16, 185, 129, 0.2)',
-      borderColor: this._source.options.borderColor ?? '#10b981',
-      borderWidth: this._source.options.borderWidth ?? 1,
-      label: this._source.options.label ?? '',
-      extendRight: this._source.options.extendRight ?? false,
-    });
+    const coords = this._source.getCoordinates();
+    this._renderer = new PositionPaneRenderer(
+      coords.pEntry,
+      coords.pTarget,
+      coords.pStop,
+      coords.pEnd,
+      this._source.options
+    );
+    return this._renderer;
+  }
+
+  getRenderer(): PositionPaneRenderer | null {
+    return this._renderer;
   }
 }
 
-export class RectanglePlugin implements ISeriesPrimitive<Time> {
+export class PositionPlugin implements ISeriesPrimitive<Time> {
   private _attachedParams: SeriesAttachedParameter<Time> | null = null;
-  private _paneViews: RectanglePaneView[];
+  private _paneView: PositionPaneView;
 
-  constructor(public options: RectangleOptions) {
-    this._paneViews = [new RectanglePaneView(this)];
+  constructor(public options: PositionOptions) {
+    this._paneView = new PositionPaneView(this);
   }
 
   attached(param: SeriesAttachedParameter<Time>) {
     this._attachedParams = param;
+    param.chart.subscribeClick(this._handleChartClick);
   }
 
   detached() {
-    this._attachedParams = null;
+    if (this._attachedParams) {
+      this._attachedParams.chart.unsubscribeClick(this._handleChartClick);
+      this._attachedParams = null;
+    }
   }
 
+  private _handleChartClick = (param: Parameters<MouseEventHandler<Time>>[0]) => {
+    if (!param.point || !this.options.onCancel) return;
+    const renderer = this._paneView.getRenderer();
+    const bounds = renderer?.closeButtonBounds;
+
+    if (bounds) {
+      const clickX = param.point.x;
+      const clickY = param.point.y;
+
+      if (
+        clickX >= bounds.x &&
+        clickX <= bounds.x + bounds.width &&
+        clickY >= bounds.y &&
+        clickY <= bounds.y + bounds.height
+      ) {
+        this.options.onCancel(this.options.id);
+      }
+    }
+  };
+
   updateAllViews() {
-    this._paneViews = [new RectanglePaneView(this)];
+    this._paneView = new PositionPaneView(this);
   }
 
   paneViews() {
-    return this._paneViews;
+    return [this._paneView];
   }
 
-  getPointCoordinates(p: { time: Time; price: number }) {
-    if (!this._attachedParams) return { x: null, y: null };
+  getCoordinates() {
+    if (!this._attachedParams) {
+      return { pEntry: { x: null, y: null }, pTarget: { y: null }, pStop: { y: null }, pEnd: { x: null } };
+    }
+
     const { chart, series } = this._attachedParams;
-    const x = chart.timeScale().timeToCoordinate(p.time);
-    const y = series.priceToCoordinate(p.price);
+    const timeScale = chart.timeScale();
 
-    return { x, y };
+    // ✅ CORRECT: Use timeToCoordinate directly (no logical conversions needed)
+    const xStart = timeScale.timeToCoordinate(this.options.startTime);
+    let xEnd: Coordinate | null = null;
+
+    if (xStart !== null) {
+      // Simple fallback: 150px width
+      xEnd = (xStart + 150) as Coordinate;
+    }
+
+    const yEntry = series.priceToCoordinate(this.options.entry);
+    const yTarget = series.priceToCoordinate(this.options.target);
+    const yStop = series.priceToCoordinate(this.options.stopLoss);
+
+    return {
+      pEntry: { x: xStart, y: yEntry },
+      pTarget: { y: yTarget },
+      pStop: { y: yStop },
+      pEnd: { x: xEnd },
+    };
   }
 
-  applyOptions(options: Partial<RectangleOptions>) {
+  applyOptions(options: Partial<PositionOptions>) {
     this.options = { ...this.options, ...options };
-    this._attachedParams?.requestUpdate();
-  }
-
-  requestUpdate() {
     this._attachedParams?.requestUpdate();
   }
 }
