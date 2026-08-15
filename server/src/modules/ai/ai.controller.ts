@@ -1,13 +1,17 @@
+// ai.controller.ts
 import { Request, Response } from 'express';
 import { MarketMathService, MarketOrchestrator } from '../market/market.service.js';
 import { AiInsightService } from './ai.service.js';
 
 export const getAiMarketInsight = async (req: Request, res: Response) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
-    const interval = (req.query.interval as string) || '1h';
-    const riskPercent = req.query.riskPercent ? Number(req.query.riskPercent) : 1.0;
-    const riskRewardRatio = req.query.riskRewardRatio ? Number(req.query.riskRewardRatio) : 2.0;
+    const symbol = ((req.query.symbol as string) || 'BTCUSDT').trim().toUpperCase();
+    const interval = ((req.query.interval as string) || '1h').trim();
+    const parsedRisk = req.query.riskPercent ? Number(req.query.riskPercent) : 1.0;
+    const parsedRR = req.query.riskRewardRatio ? Number(req.query.riskRewardRatio) : 2.0;
+
+    const riskPercent = isNaN(parsedRisk) ? 1.0 : parsedRisk;
+    const riskRewardRatio = isNaN(parsedRR) ? 2.0 : parsedRR;
 
     const marketData = await MarketOrchestrator.getDynamicMarketData(symbol, interval);
 
@@ -18,20 +22,10 @@ export const getAiMarketInsight = async (req: Request, res: Response) => {
       });
     }
 
-    const closingPrices = marketData.candles.map((c: any) => c.close);
+    // 1. Fetch comprehensive quantitative & structural telemetry in one call
+    const telemetry = MarketMathService.getComprehensiveTelemetry(marketData.candles);
 
-    // Indicators
-    const rsiValues = MarketMathService.calculateRSI(closingPrices) || [];
-    const smaValues = MarketMathService.calculateSMA(closingPrices, 20) || [];
-    const currentRsi = rsiValues.length > 0 ? rsiValues[rsiValues.length - 1] : null;
-    const currentSma = smaValues.length > 0 ? smaValues[smaValues.length - 1] : null;
-
-    // Structural context — this is what was missing before. Without this,
-    // the AI has no real support/resistance to check its own claims against.
-    const atr = MarketMathService.calculateATR(marketData.candles);
-    const { swingHigh, swingLow } = MarketMathService.findRecentSwingRange(marketData.candles, 50);
-
-    // 24h volume change, if you're tracking volume on candles
+    // 2. Calculate 24h volume change percentage
     let volume24hChangePct: number | null = null;
     if (marketData.candles.length >= 25) {
       const recentVol = marketData.candles.slice(-24).reduce((s: number, c: any) => s + (c.volume || 0), 0);
@@ -41,19 +35,25 @@ export const getAiMarketInsight = async (req: Request, res: Response) => {
       }
     }
 
+    // 3. Generate AI insight with complete context (Chop, Volatility, VWAP, News & Structural Levels)
     const insightReport = await AiInsightService.generateMarketInsight({
       symbol: marketData.symbol,
       interval: marketData.interval,
       assetType: marketData.assetType,
       latestPrice: marketData.latestPrice,
-      rsi: currentRsi,
-      sma: currentSma,
-      newsHeadlines: marketData.headlines || [],
-      atr,
-      recentSwingHigh: swingHigh,
-      recentSwingLow: swingLow,
+      rsi: telemetry.rsi,
+      sma: telemetry.sma,
+      atr: telemetry.atr,
+      adx: telemetry.adx?.adx || null,
+      pdi: telemetry.adx?.pdi || null,
+      mdi: telemetry.adx?.mdi || null,
+      vwap: telemetry.vwap || null,
+      bollingerBands: telemetry.bollingerBands,
+      recentSwingHigh: telemetry.swingRange.swingHigh,
+      recentSwingLow: telemetry.swingRange.swingLow,
       volume24hChangePct,
-      fundingRate: null, // wire this up if/when you pull funding rate from Binance
+      newsHeadlines: marketData.headlines || [],
+      fundingRate: null, // Reserved for futures API integration
       riskPercent,
       riskRewardRatio,
     });
@@ -62,8 +62,12 @@ export const getAiMarketInsight = async (req: Request, res: Response) => {
       status: 'success',
       symbol: marketData.symbol,
       interval: marketData.interval,
-      indicators: { rsi: currentRsi, sma: currentSma, atr, swingHigh, swingLow },
+      assetType: marketData.assetType,
+      latestPrice: marketData.latestPrice,
+      indicators: telemetry,
+      volume24hChangePct,
       aiInsight: insightReport,
+      lastUpdated: marketData.lastUpdated,
     });
   } catch (error: any) {
     console.error('[AI Controller Error]:', error);

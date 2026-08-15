@@ -4,8 +4,8 @@ import { MarketMathService, MarketOrchestrator, MarketWatchList } from './market
 
 export const getTechnicalAnalysis = async (req: Request, res: Response) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
-    const interval = (req.query.interval as string) || '1h';
+    const symbol = ((req.query.symbol as string) || 'BTCUSDT').trim().toUpperCase();
+    const interval = ((req.query.interval as string) || '1h').trim();
 
     const marketData = await MarketOrchestrator.getDynamicMarketData(symbol, interval);
 
@@ -16,10 +16,8 @@ export const getTechnicalAnalysis = async (req: Request, res: Response) => {
       });
     }
 
-    const closingPrices = marketData.candles.map((c: any) => c.close);
-
-    const rsiValues = MarketMathService.calculateRSI(closingPrices) || [];
-    const smaValues = MarketMathService.calculateSMA(closingPrices, 20) || [];
+    // Generate complete strategy telemetry (RSI, SMA, ATR, ADX, VWAP, Bollinger Bands, Swing Range)
+    const indicators = MarketMathService.getComprehensiveTelemetry(marketData.candles);
 
     return res.status(200).json({
       status: 'success',
@@ -28,11 +26,10 @@ export const getTechnicalAnalysis = async (req: Request, res: Response) => {
       symbol: marketData.symbol,
       interval: marketData.interval,
       latestPrice: marketData.latestPrice,
-      indicators: {
-        rsi: rsiValues.length > 0 ? rsiValues[rsiValues.length - 1] : null,
-        sma: smaValues.length > 0 ? smaValues[smaValues.length - 1] : null,
-      },
+      indicators,
+      headlines: marketData.headlines || [],
       candles: marketData.candles,
+      lastUpdated: marketData.lastUpdated,
     });
   } catch (error: any) {
     console.error('[Market Analysis Error]:', error);
@@ -47,8 +44,8 @@ export const getSymbols = async (req: Request, res: Response) => {
   try {
     const { category } = req.query;
     const data = await MarketWatchList.getSupportedSymbols(category as string);
-    return res.json(data);
-  } catch (error) {
+    return res.status(200).json(data);
+  } catch (error: any) {
     console.error('Error in getSymbols:', error);
     return res.status(500).json({ error: 'Failed to fetch symbols' });
   }
@@ -57,10 +54,13 @@ export const getSymbols = async (req: Request, res: Response) => {
 export const getWatchlist = async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
-    const watchlist = await MarketWatchList.getUserWatchlist(userId as any);
-    // console.log('Watchlist:', watchlist);
-    return res.json({ watchlist });
-  } catch (error) {
+    if (!userId) {
+      return res.status(400).json({ error: 'userId parameter is required' });
+    }
+
+    const watchlist = await MarketWatchList.getUserWatchlist(userId);
+    return res.status(200).json({ watchlist });
+  } catch (error: any) {
     console.error('Error in getWatchlist:', error);
     return res.status(500).json({ error: 'Failed to fetch watchlist' });
   }
@@ -73,9 +73,9 @@ export const addToWatchlist = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'userId and symbol are required' });
     }
 
-    const result = await MarketWatchList.addToWatchlist(userId, symbol);
+    const result = await MarketWatchList.addToWatchlist(userId, symbol.trim().toUpperCase());
     return res.status(201).json({ message: 'Added to watchlist', data: result });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in addToWatchlist:', error);
     return res.status(500).json({ error: 'Failed to add to watchlist' });
   }

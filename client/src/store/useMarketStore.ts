@@ -19,6 +19,18 @@ export interface OrionSuggestion {
   rationale?: string;
 }
 
+export interface ConfirmedTrade {
+  id: string;
+  symbol: string;
+  interval: string;
+  side: 'LONG' | 'SHORT';
+  entry: number;
+  stopLoss: number;
+  target: number;
+  confidence: 'MEDIUM' | 'HIGH';
+  createdAt: number; // unix seconds — anchors the box's X position permanently
+}
+
 interface MarketStore {
   activeSymbol: string;
   activeInterval: string;
@@ -27,7 +39,12 @@ interface MarketStore {
   accountBalance: number;
   activePosition: TradePosition | null;
   aiDrawings: AiDrawing[];
-  
+
+  // Permanent log of every MEDIUM/HIGH confidence trade the AI has
+  // surfaced. Append-only from the app's perspective — entries are only
+  // removed if the user explicitly dismisses one via the chart's ✕.
+  confirmedTrades: ConfirmedTrade[];
+
   // Modal & Search Visibility State
   isSearchOpen: boolean;
   isAlertModalOpen: boolean;
@@ -42,6 +59,8 @@ interface MarketStore {
   setAccountBalance: (balance: number) => void;
   setActivePosition: (position: TradePosition | null) => void;
   setAiDrawings: (drawings: AiDrawing[]) => void;
+  addConfirmedTrade: (trade: ConfirmedTrade) => void;
+  removeConfirmedTrade: (id: string) => void;
   setSearchOpen: (isOpen: boolean) => void;
   setIsAlertModalOpen: (isOpen: boolean) => void;
   setOrionSuggestion: (suggestion: OrionSuggestion | null) => void;
@@ -58,6 +77,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
   accountBalance: 0,
   activePosition: null,
   aiDrawings: [],
+  confirmedTrades: [],
 
   // Default Initial States
   isSearchOpen: false,
@@ -73,10 +93,15 @@ export const useMarketStore = create<MarketStore>((set) => ({
   setActivePosition: (activePosition) => set({ activePosition }),
   setAiDrawings: (aiDrawings) => set({ aiDrawings }),
 
+  addConfirmedTrade: (trade) =>
+    set((state) => ({ confirmedTrades: [...state.confirmedTrades, trade] })),
+  removeConfirmedTrade: (id) =>
+    set((state) => ({ confirmedTrades: state.confirmedTrades.filter((t) => t.id !== id) })),
+
   setSearchOpen: (isSearchOpen) => set({ isSearchOpen }),
   setIsAlertModalOpen: (isAlertModalOpen) => set({ isAlertModalOpen }),
   setOrionSuggestion: (orionSuggestion) => set({ orionSuggestion }),
-  
+
   addCustomSymbol: (symbol) =>
     set((state) => {
       const formatted = symbol.toUpperCase().trim();

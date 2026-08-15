@@ -70,6 +70,7 @@ export default function AiInsightsSidebar() {
     setRiskConfig,
     accountBalance,
     setAccountBalance,
+    addConfirmedTrade,
   } = useMarketStore();
 
   const userId = useAuthStore((state) => state.user?.id);
@@ -86,8 +87,6 @@ export default function AiInsightsSidebar() {
   const [isSubmittingAlert, setIsSubmittingAlert] = useState(false);
   const [alertSuccessMsg, setAlertSuccessMsg] = useState("");
 
-  // Tracks the exact subscription params currently active on the socket,
-  // so we can send the matching unsubscribe when params change or unmount.
   const activeSubRef = useRef<{
     symbol: string;
     interval: string;
@@ -95,24 +94,21 @@ export default function AiInsightsSidebar() {
     riskRewardRatio: number;
   } | null>(null);
 
-  // Progressive loading step cycler — purely cosmetic, runs while waiting
-  // for the first insight_update after a fresh subscribe.
+  // Progressive loading step cycler
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isLoading) {
       setCurrentStepIndex(0);
       interval = setInterval(() => {
         setCurrentStepIndex((prev) =>
-          prev < THINKING_STEPS.length - 1 ? prev + 1 : prev,
+          prev < THINKING_STEPS.length - 1 ? prev + 1 : prev
         );
       }, 1400);
     }
     return () => clearInterval(interval);
   }, [isLoading]);
 
-  // Push-based insight subscription. Replaces the old REST fetch entirely —
-  // no request is sent from here except the initial "subscribe_insight"
-  // socket event; all data after that arrives via insight_update pushes.
+  // Push-based insight subscription
   useEffect(() => {
     if (!socket || !isConnected || !activeSymbol) return;
 
@@ -128,35 +124,87 @@ export default function AiInsightsSidebar() {
       riskRewardRatio,
     };
 
-    // Unsubscribe from whatever we were previously watching
-    if (activeSubRef.current) {
-      socket.emit("unsubscribe_insight", activeSubRef.current);
-    }
-
-    socket.emit("subscribe_insight", params);
-    activeSubRef.current = params;
+    // Helper to sanitize and normalize symbols (strips '/', '_', '-', and spaces)
+    const cleanSymbol = (sym?: string) =>
+      sym?.replace(/[^A-Z0-9]/gi, "").toUpperCase() ?? "";
 
     const handleInsightUpdate = (payload: InsightPayload) => {
-      // Guard against stale pushes from a room we've since left
-      // (e.g. rapid symbol switching)
-      if (
-        payload.symbol !== activeSymbol ||
-        payload.interval !== activeInterval
-      )
+      console.log("[Insight Sidebar] Received update:", payload);
+
+      if (!payload) return;
+
+      // Normalize symbol formatting before comparison (e.g. "BTC/USDT" vs "BTCUSDT")
+      const payloadSym = cleanSymbol(payload.symbol);
+      const currentSym = cleanSymbol(activeSymbol);
+      const payloadInt = payload.interval?.toLowerCase();
+      const currentInt = activeInterval?.toLowerCase();
+
+      if (payloadSym !== currentSym || payloadInt !== currentInt) {
+        console.warn(
+          `[Insight Sidebar] Mismatched payload ignored: ${payload.symbol}:${payload.interval} (Active: ${activeSymbol}:${activeInterval})`
+        );
         return;
+      }
+
       setInsight(payload);
       setIsLoading(false);
       setError("");
+
+      const trade = payload.aiInsight?.tradePosition;
+      const confidence = payload.aiInsight?.confidence;
+
+      if (trade && (confidence === "MEDIUM" || confidence === "HIGH")) {
+        // Fetch fresh state directly to prevent stale closure issues
+        const currentConfirmedTrades = useMarketStore.getState().confirmedTrades;
+        const existingForSymbol = currentConfirmedTrades.filter(
+          (t) =>
+            cleanSymbol(t.symbol) === cleanSymbol(payload.symbol) &&
+            t.interval === payload.interval
+        );
+        const last = existingForSymbol[existingForSymbol.length - 1];
+
+        const isDuplicate =
+          last &&
+          last.side === trade.side &&
+          last.entry === trade.entry &&
+          last.stopLoss === trade.stopLoss &&
+          last.target === trade.target;
+
+        if (!isDuplicate) {
+          addConfirmedTrade({
+            id: `${activeSymbol}-${Date.now()}`,
+            symbol: activeSymbol,
+            interval: payload.interval,
+            side: trade.side,
+            entry: trade.entry,
+            stopLoss: trade.stopLoss,
+            target: trade.target,
+            confidence,
+            createdAt: Math.floor(Date.now() / 1000),
+          });
+        }
+      }
     };
 
     const handleInsightError = (err: { symbol: string; message: string }) => {
-      if (err.symbol !== activeSymbol) return;
+      console.error("[Insight Sidebar] Received error:", err);
+      if (cleanSymbol(err.symbol) !== cleanSymbol(activeSymbol)) return;
       setError(err.message || "Failed to generate market insight.");
       setIsLoading(false);
     };
 
+    // 1. Attach listeners BEFORE emitting subscription request
     socket.on("insight_update", handleInsightUpdate);
     socket.on("insight_error", handleInsightError);
+
+    // 2. Unsubscribe previous session if active
+    if (activeSubRef.current) {
+      socket.emit("unsubscribe_insight", activeSubRef.current);
+    }
+
+    // 3. Emit fresh subscription
+    socket.emit("subscribe_insight", params);
+    activeSubRef.current = params;
 
     return () => {
       socket.off("insight_update", handleInsightUpdate);
@@ -173,6 +221,7 @@ export default function AiInsightsSidebar() {
     activeInterval,
     riskPercent,
     riskRewardRatio,
+    addConfirmedTrade,
   ]);
 
   const payload = insight?.aiInsight ?? null;
@@ -196,9 +245,6 @@ export default function AiInsightsSidebar() {
 
   const confidence = payload?.confidence;
   const tradePosition = payload?.tradePosition ?? null;
-
-  // Trade panel only renders when the backend actually returned (and
-  // validated) a setup — never synthesized locally.
   const hasActionableTrade = !!tradePosition && confidence !== "LOW";
 
   const riskAmountUSD = tradePosition
@@ -216,7 +262,7 @@ export default function AiInsightsSidebar() {
           tradePosition.entry,
           tradePosition.stopLoss,
           tradePosition.target,
-          positionSize,
+          positionSize
         )
       : null;
 
@@ -243,7 +289,9 @@ export default function AiInsightsSidebar() {
         thresholdValue: tradePosition.target,
       });
       setAlertSuccessMsg(
-        `Alert successfully created for ${activeSymbol} at $${formatPrice(tradePosition.target)}!`,
+        `Alert successfully created for ${activeSymbol} at $${formatPrice(
+          tradePosition.target
+        )}!`
       );
       setModalStep("success");
       setTimeout(() => setModalStep("closed"), 3000);
@@ -273,7 +321,6 @@ export default function AiInsightsSidebar() {
 
   return (
     <aside className="w-full h-full bg-white dark:bg-slate-900 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative shadcn-scrollbar">
-      {" "}
       <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800 mb-4 shrink-0">
         <div className="text-slate-900 dark:text-slate-100 font-bold tracking-wide">
           Orion Intelligence (Risk Guard)
@@ -560,6 +607,7 @@ export default function AiInsightsSidebar() {
           </div>
         )}
       </div>
+
       {modalStep !== "closed" && tradePosition && (
         <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">

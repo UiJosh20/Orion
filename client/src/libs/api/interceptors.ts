@@ -2,19 +2,18 @@ import { AxiosInstance, InternalAxiosRequestConfig, AxiosError } from 'axios';
 import { ENDPOINTS } from '@/src/constants/endpoints';
 import { getOrCreateDeviceUuid } from '../auth/device';
 
-
 let isRefreshing = false;
 let failedQueue: Array<{
-  resolve: (token: string) => void;
+  resolve: () => void;
   reject: (error: any) => void;
 }> = [];
 
-const processQueue = (error: any, token: string | null = null) => {
+const processQueue = (error: any) => {
   failedQueue.forEach((prom) => {
     if (error) {
       prom.reject(error);
     } else {
-      prom.resolve(token!);
+      prom.resolve();
     }
   });
   failedQueue = [];
@@ -26,13 +25,10 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
     (config: InternalAxiosRequestConfig) => {
       if (typeof window !== 'undefined') {
         const deviceUuid = getOrCreateDeviceUuid();
-        if (deviceUuid && config.headers) {
-          config.headers['X-Device-UUID'] = deviceUuid;
-        }
 
-        const token = localStorage.getItem('orion_access_token');
-        if (token && config.headers) {
-          config.headers.Authorization = `Bearer ${token}`;
+        // Attach X-Device-UUID using standard Axios 1.x header methods
+        if (deviceUuid && config.headers && !config.headers.has('X-Device-UUID')) {
+          config.headers.set('X-Device-UUID', deviceUuid);
         }
       }
       return config;
@@ -48,21 +44,15 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
 
       if (error.response?.status === 401 && !originalRequest._retry) {
         if (originalRequest.url === ENDPOINTS.AUTH.REFRESH) {
-          // If refresh itself fails, clear session
-          localStorage.removeItem('orion_access_token');
+          localStorage.setItem('orion_is_logged_in', 'false');
           return Promise.reject(error);
         }
 
         if (isRefreshing) {
-          return new Promise((resolve, reject) => {
+          return new Promise<void>((resolve, reject) => {
             failedQueue.push({ resolve, reject });
           })
-            .then((token) => {
-              if (originalRequest.headers) {
-                originalRequest.headers.Authorization = `Bearer ${token}`;
-              }
-              return apiClient(originalRequest);
-            })
+            .then(() => apiClient(originalRequest))
             .catch((err) => Promise.reject(err));
         }
 
@@ -70,23 +60,13 @@ export function setupInterceptors(apiClient: AxiosInstance): AxiosInstance {
         isRefreshing = true;
 
         try {
-          // Call refresh route (Browser auto-sends HttpOnly Cookie)
-          const { data } = await apiClient.post(ENDPOINTS.AUTH.REFRESH);
-          const newAccessToken = data.accessToken;
-
-          localStorage.setItem('orion_access_token', newAccessToken);
-
-          apiClient.defaults.headers.common['Authorization'] = `Bearer ${newAccessToken}`;
-
-          if (originalRequest.headers) {
-            originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
-          }
-
-          processQueue(null, newAccessToken);
+          await apiClient.post(ENDPOINTS.AUTH.REFRESH);
+          localStorage.setItem('orion_is_logged_in', 'true');
+          processQueue(null);
           return apiClient(originalRequest);
         } catch (refreshError) {
-          processQueue(refreshError, null);
-          localStorage.removeItem('orion_access_token');
+          processQueue(refreshError);
+          localStorage.setItem('orion_is_logged_in', 'false');
           return Promise.reject(refreshError);
         } finally {
           isRefreshing = false;
