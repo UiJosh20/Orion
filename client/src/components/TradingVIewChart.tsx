@@ -102,6 +102,7 @@ function ChartContent() {
 
   const positionLogicalIndexRef = useRef<Map<string, number>>(new Map());
   const [renderKey, setRenderKey] = useState(0);
+  const [boxWidth, setBoxWidth] = useState(180);
 
   const [isDrawMode, setIsDrawMode] = useState(false);
 
@@ -187,6 +188,7 @@ function ChartContent() {
   const handleInstantDraw = useCallback(async () => {
     if (!activePosition) return;
     if (!isChartReady) return;
+    setBoxWidth(180);
 
     const localId = `confirmed-trade-${Date.now()}`;
     const createdAt = Math.floor(Date.now() / 1000);
@@ -293,7 +295,7 @@ function ChartContent() {
         positionLogicalIndexRef.current.set(id, logicalIndex);
       }
 
-      let xStart:any = timeScale.logicalToCoordinate(logicalIndex as Logical);
+      let xStart = timeScale.logicalToCoordinate(logicalIndex as Logical);
       if (xStart === null) {
         xStart = 0;
       }
@@ -304,7 +306,7 @@ function ChartContent() {
 
       if (yEntry === null || yTarget === null || yStop === null) return null;
 
-      const width = 180;
+      const width = boxWidth;
       const x = typeof xStart === 'number' ? xStart : 0;
       const y = Number(Math.min(yEntry, yTarget, yStop));
 
@@ -332,15 +334,15 @@ function ChartContent() {
         stopLoss: Number(position.stopLoss),
       };
     },
-    [renderKey]
+    [renderKey, boxWidth]
   );
 
-  // ✅ NEW RESIZE / DRAG HANDLER (3 Adjustments in 1)
+  // ✅ RESIZE / DRAG HANDLER (FIXED HORIZONTAL MOVEMENT - NO CRASH)
   const handleResizeStart = useCallback((
-    e: React.MouseEvent, 
-    id: string, 
-    handleType: 'move-entry' | 'target' | 'stop', // What part is being moved
-    currentVal: number, 
+    e: React.MouseEvent,
+    id: string,
+    handleType: 'move-entry' | 'target' | 'stop' | 'width',
+    currentVal: number,
     anchorVal: number
   ) => {
     e.preventDefault();
@@ -348,57 +350,110 @@ function ChartContent() {
 
     const isAi = id === 'active-ai-position';
     const series = candlestickSeriesRef.current;
-    if (!series || !activePosition) return;
+    const container = chartContainerRef.current;
+    if (!series || !activePosition || !container) return;
+
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+
+    const startWidth = boxWidth;
+    const startEntry = activePosition.entry;
+    const startTarget = activePosition.target;
+    const startStop = activePosition.stopLoss;
+    const startTime = activePosition.time;
+
+    const offsetTarget = startTarget - startEntry;
+    const offsetStop = startStop - startEntry;
+
+    const timeScale = chartRef.current?.timeScale();
+
+    // Keep track of new logical index for horizontal movement
+    let newLogicalIndex: number | null = null;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const rect = chartContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      const rect = container.getBoundingClientRect();
+      const deltaX = moveEvent.clientX - startMouseX;
+      const deltaY = moveEvent.clientY - startMouseY;
 
-      const mouseY = moveEvent.clientY - rect.top;
-      const newPrice = series.coordinateToPrice(mouseY);
-      if (newPrice === null) return;
+      let newEntry = startEntry;
+      let newTarget = startTarget;
+      let newStop = startStop;
+      let newWidth = startWidth;
 
-      const newVal = Number(newPrice);
-
-      let newEntry = activePosition.entry;
-      let newTarget = activePosition.target;
-      let newStop = activePosition.stopLoss;
-
-      // 1. Moving the ENTRY moves the ENTIRE POSITION
       if (handleType === 'move-entry') {
-        const offsetTarget = activePosition.target - activePosition.entry;
-        const offsetStop = activePosition.stopLoss - activePosition.entry;
-        newEntry = newVal;
-        newTarget = newVal + offsetTarget;
-        newStop = newVal + offsetStop;
-      } 
-      // 2. Moving the TARGET only
+        // 1. Vertical (Price)
+        const mouseY = moveEvent.clientY - rect.top;
+        const newPrice = series.coordinateToPrice(mouseY);
+        if (newPrice === null) return;
+
+        newEntry = Number(newPrice);
+        newTarget = newEntry + offsetTarget;
+        newStop = newEntry + offsetStop;
+
+        // 2. Horizontal (Logical Index) - store in ref
+        if (timeScale) {
+          const currentLogical = positionLogicalIndexRef.current.get(id);
+          if (currentLogical !== undefined) {
+            const visibleRange = timeScale.getVisibleLogicalRange();
+            if (visibleRange) {
+              const startCoord = timeScale.logicalToCoordinate(visibleRange.from);
+              const endCoord = timeScale.logicalToCoordinate(visibleRange.to);
+              if (startCoord !== null && endCoord !== null) {
+                const avgBarWidth = (endCoord - startCoord) / (visibleRange.to - visibleRange.from);
+                if (avgBarWidth > 0) {
+                  const barsMoved = Math.round(deltaX / avgBarWidth);
+                  newLogicalIndex = currentLogical + barsMoved;
+                  // Update the ref immediately so the overlay moves
+                  positionLogicalIndexRef.current.set(id, newLogicalIndex);
+                }
+              }
+            }
+          }
+        }
+      }
       else if (handleType === 'target') {
-        newEntry = activePosition.entry;
-        newTarget = newVal;
-        newStop = activePosition.stopLoss;
-      } 
-      // 3. Moving the STOP only
+        const mouseY = moveEvent.clientY - rect.top;
+        const newPrice = series.coordinateToPrice(mouseY);
+        if (newPrice === null) return;
+        newTarget = Number(newPrice);
+        newEntry = startEntry;
+        newStop = startStop;
+      }
       else if (handleType === 'stop') {
-        newEntry = activePosition.entry;
-        newTarget = activePosition.target;
-        newStop = newVal;
+        const mouseY = moveEvent.clientY - rect.top;
+        const newPrice = series.coordinateToPrice(mouseY);
+        if (newPrice === null) return;
+        newStop = Number(newPrice);
+        newEntry = startEntry;
+        newTarget = startTarget;
+      }
+      else if (handleType === 'width') {
+        newWidth = Math.max(40, startWidth + deltaX);
+        newEntry = startEntry;
+        newTarget = startTarget;
+        newStop = startStop;
       }
 
-      // Update the local store in real-time
-      if (isAi) {
-        setActivePosition({
-          ...activePosition,
-          entry: newEntry,
-          target: newTarget,
-          stopLoss: newStop,
-        });
+      // Update state (time is not updated during drag to avoid crashes)
+      if (handleType === 'width') {
+        setBoxWidth(newWidth);
       } else {
-        updateConfirmedTrade(id, {
-          entry: newEntry,
-          target: newTarget,
-          stopLoss: newStop,
-        });
+        if (isAi) {
+          setActivePosition({
+            side: activePosition.side,
+            entry: newEntry,
+            target: newTarget,
+            stopLoss: newStop,
+            time: startTime, // keep old time until mouse up
+          });
+        } else {
+          updateConfirmedTrade(id, {
+            entry: newEntry,
+            target: newTarget,
+            stopLoss: newStop,
+            // time not updated here
+          });
+        }
       }
       setRenderKey((k) => k + 1);
     };
@@ -407,9 +462,43 @@ function ChartContent() {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
 
+      // Now compute the new time from the logical index (if changed)
+      let newTime = startTime;
+      if (newLogicalIndex !== null && timeScale) {
+        // Convert logical index to time via coordinate
+        const coord = timeScale.logicalToCoordinate(newLogicalIndex as Logical);
+        if (coord !== null) {
+          const t = timeScale.coordinateToTime(coord);
+          if (t !== null) {
+            newTime = t as UTCTimestamp;
+          }
+        }
+        // If conversion fails, fallback to current time
+        if (!newTime) {
+          newTime = toUnixSeconds(Date.now());
+        }
+      }
+
+      // Update the store with the final time if we moved horizontally
+      if (newLogicalIndex !== null) {
+        if (isAi) {
+          setActivePosition(prev => prev ? {
+            ...prev,
+            entry: prev.entry,
+            target: prev.target,
+            stopLoss: prev.stopLoss,
+            time: newTime,
+          } : null);
+        } else {
+          updateConfirmedTrade(id, {
+            time: newTime,
+          });
+        }
+      }
+
       // Save to DB
       if (isAi || !userId) return;
-      
+
       const existingTrade = confirmedTrades.find((t) => t.id === id);
       if (!existingTrade?.dbId) return;
 
@@ -434,9 +523,9 @@ function ChartContent() {
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-  }, [activePosition, setActivePosition, updateConfirmedTrade, confirmedTrades, userId, activeSymbol, activeInterval]);
+  }, [activePosition, boxWidth, setActivePosition, updateConfirmedTrade, confirmedTrades, userId, activeSymbol, activeInterval]);
 
-  // ✅ TRADINGVIEW-STYLE RENDER (WITH RESIZE HANDLES)
+  // ✅ TRADINGVIEW-STYLE RENDER (RESIZE HANDLES + SCROLL SAFE)
   const renderPositionOverlay = useCallback(() => {
     if (!isChartReady) return null;
 
@@ -471,13 +560,12 @@ function ChartContent() {
       if (!coords) return null;
 
       const { x, y, width, height, yEntry, yTarget, yStop, targetIsAbove, side, entry, target, stopLoss } = coords;
-      
+
       const targetAreaHeight = Math.abs(yEntry - yTarget);
       const stopAreaHeight = Math.abs(yEntry - yStop);
       const targetTop = targetIsAbove ? 0 : stopAreaHeight;
       const stopTop = targetIsAbove ? targetAreaHeight : 0;
 
-      // Calculate Risk/Reward Ratio for display
       const riskDist = Math.abs(entry - stopLoss);
       const rewardDist = Math.abs(target - entry);
       const rrRatio = riskDist > 0 ? (rewardDist / riskDist).toFixed(2) : '0.00';
@@ -485,24 +573,28 @@ function ChartContent() {
       return (
         <div
           key={item.id}
-          className="absolute pointer-events-auto group z-50"
+          className="absolute pointer-events-auto group z-50 cursor-grab active:cursor-grabbing"
           style={{ left: x, top: y, width, height }}
+          // Allow dragging the whole box by clicking on the background
+          onMouseDown={(e) => handleResizeStart(e, item.id, 'move-entry', entry, entry)}
         >
-          
+
           {/* 1. TARGET AREA (GREEN ZONE) */}
           <div
             className="absolute border border-emerald-500/60 bg-emerald-500/20"
             style={{ top: targetTop, height: targetAreaHeight, width: '100%' }}
           >
-            {/* Target Label */}
             <div className="absolute top-1 right-2 text-[10px] text-emerald-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               Target: ${Number(target).toFixed(2)}
             </div>
 
-            {/* ✨ HANDLE: Adjust Target Price */}
-            <div 
+            {/* HANDLE: Adjust Target Price */}
+            <div
               className="absolute -top-2 -right-2 w-3 h-3 bg-white border border-blue-500 cursor-ns-resize rounded-sm shadow-md hover:bg-blue-400 hover:scale-125 transition-all"
-              onMouseDown={(e) => handleResizeStart(e, item.id, 'target', target, entry)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleResizeStart(e, item.id, 'target', target, entry);
+              }}
             />
           </div>
 
@@ -511,19 +603,21 @@ function ChartContent() {
             className="absolute border border-rose-500/60 bg-rose-500/20"
             style={{ top: stopTop, height: stopAreaHeight, width: '100%' }}
           >
-            {/* Stop Label */}
             <div className="absolute top-1 right-2 text-[10px] text-rose-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               Stop: ${Number(stopLoss).toFixed(2)}
             </div>
 
-            {/* ✨ HANDLE: Adjust Stop Loss Price */}
-            <div 
+            {/* HANDLE: Adjust Stop Loss Price */}
+            <div
               className="absolute -bottom-2 -right-2 w-3 h-3 bg-white border border-blue-500 cursor-ns-resize rounded-sm shadow-md hover:bg-blue-400 hover:scale-125 transition-all"
-              onMouseDown={(e) => handleResizeStart(e, item.id, 'stop', stopLoss, entry)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleResizeStart(e, item.id, 'stop', stopLoss, entry);
+              }}
             />
           </div>
 
-          {/* 3. ENTRY LINE (DASHED LINE) */}
+          {/* 3. ENTRY LINE & WIDTH CONTROL */}
           <div
             className="absolute w-full border-t border-slate-400 border-dashed"
             style={{ top: yEntry - y }}
@@ -535,10 +629,22 @@ function ChartContent() {
               R:R {rrRatio}
             </div>
 
-            {/* ✨ HANDLE: Move Entire Setup */}
-            <div 
+            {/* ✅ MIDDLE HANDLE: Move Entire Setup (2D) - redundant but kept for compatibility */}
+            <div
               className="absolute -top-2 -left-2 w-3 h-3 bg-white border border-blue-500 cursor-move rounded-sm shadow-md hover:bg-blue-400 hover:scale-125 transition-all"
-              onMouseDown={(e) => handleResizeStart(e, item.id, 'move-entry', entry, entry)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleResizeStart(e, item.id, 'move-entry', entry, entry);
+              }}
+            />
+
+            {/* ✅ RIGHT HANDLE: Increase/Decrease Width Only */}
+            <div
+              className="absolute -top-2 right-2 w-3 h-3 bg-white border border-blue-500 cursor-ew-resize rounded-sm shadow-md hover:bg-blue-400 hover:scale-125 transition-all"
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                handleResizeStart(e, item.id, 'width', 0, 0);
+              }}
             />
           </div>
 
@@ -718,8 +824,8 @@ function ChartContent() {
 
   return (
     <div className="relative w-full h-full flex-1 min-h-100 md:min-h-150 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden p-2 flex flex-col">
-      
-      {/* ✅ FLOATING TOOLBAR */}
+
+      {/* ✅ TOOLBAR */}
       <div className="absolute top-3 left-3 z-40 flex items-center gap-2 pointer-events-auto">
         <button
           onClick={() => {
