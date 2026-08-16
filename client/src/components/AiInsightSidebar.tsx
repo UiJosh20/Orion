@@ -7,6 +7,8 @@ import { useAuthStore } from "@/src/store/useAuthStore";
 import { useSocket } from "../providers/SocketProvider";
 import { alertService } from "../service/alertService";
 import { calculateProfitBreakdown } from "../libs/tradingMath";
+import { api } from "@/src/libs/api/client"; // ✅ Import API client
+import { ENDPOINTS } from "@/src/constants/endpoints"; // ✅ Import ENDPOINTS
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH";
 
@@ -108,7 +110,34 @@ export default function AiInsightsSidebar() {
     return () => clearInterval(interval);
   }, [isLoading]);
 
-  // ✅ OPTIMIZED: Only fetch new insight when symbol or interval changes (not risk config)
+  // ✅ Save Risk Config to Backend when it changes
+  const saveRiskConfigToBackend = async (risk: number, ratio: number) => {
+    if (!userId) return;
+    try {
+      await api.post(ENDPOINTS.MARKET.RISK_CONFIG, {
+        userId,
+        riskPercent: risk,
+        riskRewardRatio: ratio,
+      });
+    } catch (error) {
+      console.error("Failed to save risk config:", error);
+    }
+  };
+
+  // ✅ Handle Risk Change
+  const handleRiskChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newRisk = Number(e.target.value);
+    setRiskConfig(newRisk, riskRewardRatio);
+    saveRiskConfigToBackend(newRisk, riskRewardRatio);
+  };
+
+  const handleRatioChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newRatio = Number(e.target.value);
+    setRiskConfig(riskPercent, newRatio);
+    saveRiskConfigToBackend(riskPercent, newRatio);
+  };
+
+  // Push-based insight subscription
   useEffect(() => {
     if (!socket || !isConnected || !activeSymbol) return;
 
@@ -142,40 +171,9 @@ export default function AiInsightsSidebar() {
       setInsight(payload);
       setIsLoading(false);
       setError("");
-
-      const trade = payload.aiInsight?.tradePosition;
-      const confidence = payload.aiInsight?.confidence;
-
-      if (trade && (confidence === "MEDIUM" || confidence === "HIGH")) {
-        const currentConfirmedTrades = useMarketStore.getState().confirmedTrades;
-        const existingForSymbol = currentConfirmedTrades.filter(
-          (t) =>
-            cleanSymbol(t.symbol) === cleanSymbol(payload.symbol) &&
-            t.interval === payload.interval
-        );
-        const last = existingForSymbol[existingForSymbol.length - 1];
-
-        const isDuplicate =
-          last &&
-          last.side === trade.side &&
-          last.entry === trade.entry &&
-          last.stopLoss === trade.stopLoss &&
-          last.target === trade.target;
-
-        if (!isDuplicate) {
-          addConfirmedTrade({
-            id: `${activeSymbol}-${Date.now()}`,
-            symbol: activeSymbol,
-            interval: payload.interval,
-            side: trade.side,
-            entry: trade.entry,
-            stopLoss: trade.stopLoss,
-            target: trade.target,
-            confidence,
-            createdAt: Math.floor(Date.now() / 1000),
-          });
-        }
-      }
+      
+      // ⚠️ REMOVED THE DUPLICATE addConfirmedTrade CALL HERE
+      // The chart listens to the SAME socket event and draws the box directly.
     };
 
     const handleInsightError = (err: { symbol: string; message: string }) => {
@@ -202,9 +200,8 @@ export default function AiInsightsSidebar() {
         activeSubRef.current = null;
       }
     };
-  }, [socket, isConnected, activeSymbol, activeInterval, addConfirmedTrade]);
+  }, [socket, isConnected, activeSymbol, activeInterval, riskPercent, riskRewardRatio]);
 
-  // ✅ OPTIMIZED: Only recalculate position sizes when risk/balance changes (no loading)
   const payload = insight?.aiInsight ?? null;
 
   const sections = payload
@@ -302,7 +299,6 @@ export default function AiInsightsSidebar() {
 
   return (
     <>
-      {/* ✅ FULL-SCREEN MODAL (Rendered outside sidebar) */}
       {modalStep !== "closed" && tradePosition && (
         <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
@@ -392,7 +388,6 @@ export default function AiInsightsSidebar() {
         </div>
       )}
 
-      {/* Sidebar Content */}
       <aside className="w-full h-full bg-white dark:bg-slate-900 flex flex-col p-5 font-mono text-xs overflow-y-auto transition-colors relative shadcn-scrollbar">
         <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800 mb-4 shrink-0">
           <div className="text-slate-900 dark:text-slate-100 font-bold tracking-wide">
@@ -484,9 +479,7 @@ export default function AiInsightsSidebar() {
                         </label>
                         <select
                           value={riskPercent}
-                          onChange={(e) =>
-                            setRiskConfig(Number(e.target.value), riskRewardRatio)
-                          }
+                          onChange={handleRiskChange} // ✅ Save to DB
                           className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
                         >
                           <option value={0.5}>0.5% Risk</option>
@@ -501,9 +494,7 @@ export default function AiInsightsSidebar() {
                         </label>
                         <select
                           value={riskRewardRatio}
-                          onChange={(e) =>
-                            setRiskConfig(riskPercent, Number(e.target.value))
-                          }
+                          onChange={handleRatioChange} // ✅ Save to DB
                           className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg p-1.5 text-slate-800 dark:text-slate-200 font-mono text-xs"
                         >
                           <option value={1.5}>1 : 1.5 (Standard)</option>

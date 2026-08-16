@@ -1,14 +1,10 @@
 export const ENDPOINTS = {
-    
   ROOT: '/',
   SESSION: {
-    // Registers or pings anonymous device sessions
     DEVICE: '/session/device',
   },
   AUTH: {
-    // Google OAuth exchange & session management
     GOOGLE: '/auth/google',
-    // Device session authentication
     DEVICE: '/auth/device',
     REFRESH: '/auth/refresh',
     LOGOUT: '/auth/logout',
@@ -17,9 +13,11 @@ export const ENDPOINTS = {
   MARKET: {
     SYMBOLS: '/market/symbols',
     ANALYZE: '/market/analyze',
+    // ✅ NEW POSITIONS ENDPOINTS
+    POSITIONS: '/market/positions',
+    RISK_CONFIG: '/market/risk-config',
   },
   WATCHLIST: {
-    // Dynamic getter for device_uuid OR user_id watchlists
     GET: (userId: string) => `/market/watchlist/${encodeURIComponent(userId)}`,
     ADD: '/market/watchlist',
     REMOVE: (userId: string, symbol: string) =>
