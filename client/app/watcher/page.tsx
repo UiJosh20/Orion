@@ -10,7 +10,9 @@ import { useMarketStore } from "@/src/store/useMarketStore";
 import { useAuthStore } from "@/src/store/useAuthStore";
 import { TriggeredAlertBanner } from '@/src/components/TriggeredAlertBanner';
 import { SocketProvider } from '@/src/providers/SocketProvider';
-import { List, LineChart, Sparkles } from 'lucide-react';
+import { Card } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LineChart, Sparkles, List } from 'lucide-react';
 
 type MobilePanel = 'chart' | 'watchlist' | 'insights';
 
@@ -27,66 +29,50 @@ export default function DashboardPage() {
 
   return (
     <SocketProvider userId={userId}>
-      <div className="flex flex-col w-screen h-screen overflow-hidden bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      <div className="flex flex-col w-screen h-screen overflow-hidden bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white">
         <Header />
         <TriggeredAlertBanner />
 
         <main className="flex-1 flex flex-col md:flex-row min-h-0 w-full relative overflow-hidden">
-          {/* Chart — now the only left/main column, gets the width the
-              watchlist used to take */}
           <div
-            className={`${mobilePanel === 'chart' ? 'flex' : 'hidden'} md:flex flex-1 h-full min-h-0 relative`}
+            className={`${mobilePanel === 'chart' ? 'flex' : 'hidden'} md:flex flex-1 h-full min-h-0 relative p-2`}
           >
-            <TradingViewChart />
+            <Card className="flex-1 border-0 shadow-none overflow-hidden rounded-xl bg-zinc-950/90 border border-zinc-800">
+              <TradingViewChart />
+            </Card>
           </div>
 
-          {/* Right column: AI Insight stacked above Watchlist. Fixed
-              width lives here now, not on the individual components. */}
           <div
-            className={`${mobilePanel === 'insights' || mobilePanel === 'watchlist' ? 'flex' : 'hidden'} md:flex flex-col w-full md:w-[340px] lg:w-[380px] shrink-0 h-full md:border-l border-slate-200 dark:border-slate-800`}
+            className={`${mobilePanel === 'insights' || mobilePanel === 'watchlist' ? 'flex' : 'hidden'} md:flex flex-col w-full md:w-[340px] lg:w-[380px] shrink-0 h-full md:border-l border-zinc-800 bg-black`}
           >
-            {/* AI Insight — takes the larger share of the column */}
-            <div
-              className={`${mobilePanel === 'insights' ? 'flex' : 'hidden'} md:flex flex-col flex-[3] min-h-0 border-b border-slate-200 dark:border-slate-800`}
-            >
+            <Card className="flex-1 border-0 shadow-none rounded-none bg-transparent flex flex-col flex-[3] min-h-0 border-b border-zinc-800">
               <AiInsightsSidebar />
-            </div>
+            </Card>
 
-            {/* Watchlist — stacked underneath, smaller share, own scroll */}
-            <div
-              className={`${mobilePanel === 'watchlist' ? 'flex' : 'hidden'} md:flex flex-col flex-[2] min-h-0 p-2 md:p-3`}
-            >
+            <Card className="flex-1 border-0 shadow-none rounded-none bg-transparent flex flex-col flex-[2] min-h-0 p-2 md:p-3">
               <WatchlistSidebar />
-            </div>
+            </Card>
           </div>
         </main>
 
-        {/* Mobile tab bar — still three destinations, since watchlist
-            needs its own full-screen view on small screens even though
-            it's stacked with insights on desktop */}
-        <nav className="md:hidden flex items-center justify-around border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 py-2 shrink-0">
-          <button
-            onClick={() => setMobilePanel('chart')}
-            className={`flex flex-col items-center gap-0.5 px-4 py-1 text-[10px] font-mono ${mobilePanel === 'chart' ? 'text-blue-500' : 'text-slate-400'}`}
-          >
-            <LineChart className="w-4 h-4" />
-            Chart
-          </button>
-          <button
-            onClick={() => setMobilePanel('insights')}
-            className={`flex flex-col items-center gap-0.5 px-4 py-1 text-[10px] font-mono ${mobilePanel === 'insights' ? 'text-blue-500' : 'text-slate-400'}`}
-          >
-            <Sparkles className="w-4 h-4" />
-            Orion
-          </button>
-          <button
-            onClick={() => setMobilePanel('watchlist')}
-            className={`flex flex-col items-center gap-0.5 px-4 py-1 text-[10px] font-mono ${mobilePanel === 'watchlist' ? 'text-blue-500' : 'text-slate-400'}`}
-          >
-            <List className="w-4 h-4" />
-            Watchlist
-          </button>
-        </nav>
+        <div className="md:hidden w-full border-t border-zinc-800 bg-black py-2 shrink-0">
+          <Tabs value={mobilePanel} onValueChange={(v) => setMobilePanel(v as MobilePanel)} className="w-full">
+            <TabsList className="w-full flex justify-around h-12 bg-transparent border-0 p-0">
+              <TabsTrigger value="chart" className="flex-1 flex flex-col gap-0.5 data-[state=active]:text-blue-500 text-zinc-400 h-full rounded-none bg-transparent">
+                <LineChart className="w-4 h-4" />
+                <span className="text-[10px] font-mono">Chart</span>
+              </TabsTrigger>
+              <TabsTrigger value="insights" className="flex-1 flex flex-col gap-0.5 data-[state=active]:text-blue-500 text-zinc-400 h-full rounded-none bg-transparent">
+                <Sparkles className="w-4 h-4" />
+                <span className="text-[10px] font-mono">Orion</span>
+              </TabsTrigger>
+              <TabsTrigger value="watchlist" className="flex-1 flex flex-col gap-0.5 data-[state=active]:text-blue-500 text-zinc-400 h-full rounded-none bg-transparent">
+                <List className="w-4 h-4" />
+                <span className="text-[10px] font-mono">Watchlist</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
 
         <WatchListAlertModal
           isOpen={!!alertModalData}

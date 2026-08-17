@@ -21,6 +21,7 @@ export interface OrionSuggestion {
 
 export interface ConfirmedTrade {
   id: string;
+  dbId?: string;          // ✅ Added: Backend database UUID
   symbol: string;
   interval: string;
   side: 'LONG' | 'SHORT';
@@ -28,7 +29,7 @@ export interface ConfirmedTrade {
   stopLoss: number;
   target: number;
   confidence: 'MEDIUM' | 'HIGH';
-  createdAt: number; // unix seconds — anchors the box's X position permanently
+  createdAt: number; // unix seconds
 }
 
 interface MarketStore {
@@ -39,13 +40,7 @@ interface MarketStore {
   accountBalance: number;
   activePosition: TradePosition | null;
   aiDrawings: AiDrawing[];
-
-  // Permanent log of every MEDIUM/HIGH confidence trade the AI has
-  // surfaced. Append-only from the app's perspective — entries are only
-  // removed if the user explicitly dismisses one via the chart's ✕.
   confirmedTrades: ConfirmedTrade[];
-
-  // Modal & Search Visibility State
   isSearchOpen: boolean;
   isAlertModalOpen: boolean;
   orionSuggestion: OrionSuggestion | null;
@@ -59,8 +54,11 @@ interface MarketStore {
   setAccountBalance: (balance: number) => void;
   setActivePosition: (position: TradePosition | null) => void;
   setAiDrawings: (drawings: AiDrawing[]) => void;
+  
   addConfirmedTrade: (trade: ConfirmedTrade) => void;
   removeConfirmedTrade: (id: string) => void;
+  updateConfirmedTrade: (id: string, updates: Partial<ConfirmedTrade>) => void; // ✅ New
+
   setSearchOpen: (isOpen: boolean) => void;
   setIsAlertModalOpen: (isOpen: boolean) => void;
   setOrionSuggestion: (suggestion: OrionSuggestion | null) => void;
@@ -78,8 +76,6 @@ export const useMarketStore = create<MarketStore>((set) => ({
   activePosition: null,
   aiDrawings: [],
   confirmedTrades: [],
-
-  // Default Initial States
   isSearchOpen: false,
   isAlertModalOpen: false,
   orionSuggestion: null,
@@ -97,6 +93,12 @@ export const useMarketStore = create<MarketStore>((set) => ({
     set((state) => ({ confirmedTrades: [...state.confirmedTrades, trade] })),
   removeConfirmedTrade: (id) =>
     set((state) => ({ confirmedTrades: state.confirmedTrades.filter((t) => t.id !== id) })),
+  updateConfirmedTrade: (id, updates) =>
+    set((state) => ({
+      confirmedTrades: state.confirmedTrades.map((t) =>
+        t.id === id ? { ...t, ...updates } : t
+      ),
+    })),
 
   setSearchOpen: (isSearchOpen) => set({ isSearchOpen }),
   setIsAlertModalOpen: (isAlertModalOpen) => set({ isAlertModalOpen }),

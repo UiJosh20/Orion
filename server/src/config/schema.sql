@@ -65,3 +65,33 @@ CREATE TABLE IF NOT EXISTS user_watchlist (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, symbol)
 );
+
+-- 1. Create the table first
+CREATE TABLE IF NOT EXISTS user_positions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id VARCHAR(255) NOT NULL,
+  symbol VARCHAR(50) NOT NULL,
+  interval VARCHAR(20) NOT NULL,
+  side VARCHAR(10) NOT NULL,
+  entry DECIMAL(20, 8) NOT NULL,
+  target DECIMAL(20, 8) NOT NULL,
+  stop_loss DECIMAL(20, 8) NOT NULL,
+  time TIMESTAMP NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Create the indexes separately
+CREATE INDEX IF NOT EXISTS idx_user_positions_user_id ON user_positions (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_positions_symbol ON user_positions (symbol);
+
+
+-- Create the user_risk_config table to store user preferences
+CREATE TABLE IF NOT EXISTS user_risk_config (
+  user_id UUID PRIMARY KEY,
+  risk_percent DECIMAL(5, 2) NOT NULL DEFAULT 1.0,
+  risk_reward_ratio DECIMAL(5, 2) NOT NULL DEFAULT 2.0,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Optional: Add a helpful comment
+COMMENT ON TABLE user_risk_config IS 'Stores user preferred risk percentage and risk/reward ratio for trading setups.';
