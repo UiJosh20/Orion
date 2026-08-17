@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import React, {
   useEffect,
@@ -137,19 +137,20 @@ class ChartErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center w-full h-150 bg-slate-950 border border-slate-800 rounded-xl p-6 text-center">
+        <div className="flex flex-col items-center justify-center w-full h-150 bg-zinc-950 border border-zinc-800 rounded-xl p-6 text-center">
           <p className="text-red-500 font-medium text-sm mb-2">
             Failed to render chart
           </p>
-          <p className="text-slate-500 text-xs font-mono mb-4">
+          <p className="text-zinc-500 text-xs font-mono mb-4">
             {this.state.error?.message}
           </p>
-          <button
+          <Button
+            variant="outline"
             onClick={() => this.setState({ hasError: false })}
-            className="px-4 py-2 text-xs bg-slate-800 text-slate-200 rounded-lg hover:bg-slate-700 transition-colors"
+            className="px-4 py-2 text-xs bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
           >
             Reset Chart
-          </button>
+          </Button>
         </div>
       );
     }
@@ -761,7 +762,7 @@ function ChartContent() {
             className="absolute border border-emerald-500/60 bg-emerald-500/20"
             style={{ top: targetTop, height: targetAreaHeight, width: "100%" }}
           >
-            <div className="absolute top-1 right-2 text-[10px] text-emerald-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            <div className="absolute top-1 right-2 text-[10px] text-emerald-400 font-mono font-bold bg-zinc-950/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               Target: ${Number(target).toFixed(2)}
             </div>
             <div
@@ -774,7 +775,7 @@ function ChartContent() {
             className="absolute border border-rose-500/60 bg-rose-500/20"
             style={{ top: stopTop, height: stopAreaHeight, width: "100%" }}
           >
-            <div className="absolute top-1 right-2 text-[10px] text-rose-400 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            <div className="absolute top-1 right-2 text-[10px] text-rose-400 font-mono font-bold bg-zinc-950/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               Stop: ${Number(stopLoss).toFixed(2)}
             </div>
             <div
@@ -784,13 +785,13 @@ function ChartContent() {
           </div>
 
           <div
-            className="absolute w-full border-t border-slate-400 border-dashed"
+            className="absolute w-full border-t border-zinc-400 border-dashed"
             style={{ top: yEntry - y }}
           >
-            <div className="absolute -top-3.5 left-2 text-[10px] text-slate-300 font-mono font-bold bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            <div className="absolute -top-3.5 left-2 text-[10px] text-zinc-300 font-mono font-bold bg-zinc-950/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               {side} @ ${Number(entry).toFixed(2)}
             </div>
-            <div className="absolute -top-3.5 right-2 text-[10px] text-slate-300 font-mono bg-slate-900/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
+            <div className="absolute -top-3.5 right-2 text-[10px] text-zinc-300 font-mono bg-zinc-950/80 px-1.5 py-0.5 rounded backdrop-blur-sm">
               R:R {rrRatio}
             </div>
 
@@ -809,7 +810,7 @@ function ChartContent() {
               e.stopPropagation();
               handleCancelPosition(item.id);
             }}
-            className="absolute -top-2.5 -right-2.5 w-5 h-5 rounded-full bg-slate-800 border border-slate-600 text-slate-300 hover:bg-red-500 hover:border-red-400 hover:text-white flex items-center justify-center text-[10px] font-bold transition-colors shadow-lg z-10"
+            className="absolute -top-2.5 -right-2.5 w-5 h-5 rounded-full bg-zinc-800 border border-zinc-600 text-zinc-300 hover:bg-red-500 hover:border-red-400 hover:text-white flex items-center justify-center text-[10px] font-bold transition-colors shadow-lg z-10"
           >
             ✕
           </button>
@@ -836,13 +837,13 @@ function ChartContent() {
       layout: {
         background: {
           type: ColorType.Solid,
-          color: initialDark ? "#020617" : "#ffffff",
+          color: initialDark ? "#000000" : "#ffffff",
         },
-        textColor: initialDark ? "#94a3b8" : "#334155",
+        textColor: initialDark ? "#a1a1aa" : "#334155",
       },
       grid: {
-        vertLines: { color: initialDark ? "#0f172a" : "#f1f5f9" },
-        horzLines: { color: initialDark ? "#0f172a" : "#f1f5f9" },
+        vertLines: { color: initialDark ? "#18181b" : "#f1f5f9" },
+        horzLines: { color: initialDark ? "#18181b" : "#f1f5f9" },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -850,13 +851,13 @@ function ChartContent() {
           color: "#64748b",
           width: 1,
           style: LineStyle.Dashed,
-          labelBackgroundColor: "#0f172a",
+          labelBackgroundColor: "#18181b",
         },
         horzLine: {
           color: "#64748b",
           width: 1,
           style: LineStyle.Dashed,
-          labelBackgroundColor: "#0f172a",
+          labelBackgroundColor: "#18181b",
         },
       },
       width: container.clientWidth || 800,
@@ -964,7 +965,9 @@ function ChartContent() {
 
       candlestickSeriesRef.current.setData(rawFormatted);
       isHistoryLoadedRef.current = true;
-      chartRef.current?.timeScale().fitContent();
+      
+      // 🚨 REMOVED: fitContent() was removed so the user can manually pan to see history.
+      // chartRef.current?.timeScale().fitContent(); 
 
       setIsLoading(false);
     };
@@ -990,6 +993,9 @@ function ChartContent() {
       } else {
         allCandlesRef.current.push(updated);
       }
+      
+      // 🚨 REMOVED: fitContent() was removed so the user can manually pan to see history.
+      // chartRef.current?.timeScale().fitContent(); 
     };
 
     socket.on("klines_history", handleKlinesHistory);
@@ -1002,9 +1008,8 @@ function ChartContent() {
     };
   }, [activeSymbol, activeInterval, isConnected, socket]);
 
-   return (
+  return (
     <div className="relative w-full h-full flex-1 min-h-100 md:min-h-150 bg-black border border-zinc-800 rounded-xl overflow-hidden p-2 flex flex-col">
-      {/* TOOLBAR UPDATES USING ZINC */}
       <div className="absolute top-3 left-3 z-40 flex items-center gap-2 pointer-events-auto">
         <Button
           onClick={() => {
@@ -1061,7 +1066,6 @@ function ChartContent() {
         </div>
       )}
 
-      {/* LOADING OVERLAYS */}
       {isLoading && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/90 backdrop-blur-sm text-xs font-mono text-emerald-400">
           Loading {activeSymbol} ({activeInterval})...
