@@ -61,24 +61,27 @@ function analyzeMarketStructure(candles: any[]): MStructure {
   // 1. Find Swing Highs and Lows (Fractals)
   let swingHigh = null;
   let swingLow = null;
-  const window = candles.slice(-20); // Lookback 20 candles for structure
+  const window = candles.slice(-20);
   for (let i = 5; i < window.length - 5; i++) {
     const high = window[i].high;
     const low = window[i].low;
     const prevHighs = window.slice(i - 5, i).map((c) => c.high);
     const nextHighs = window.slice(i + 1, i + 6).map((c) => c.high);
+    const prevLows = window.slice(i - 5, i).map((c) => c.low);
+    const nextLows = window.slice(i + 1, i + 6).map((c) => c.low);
+
     if (high > Math.max(...prevHighs) && high > Math.max(...nextHighs)) {
       swingHigh = high;
     }
-    if (low < Math.min(...prevHighs) && low < Math.min(...nextHighs)) {
+    if (low < Math.min(...prevLows) && low < Math.min(...nextLows)) {
       swingLow = low;
     }
   }
 
-  // 2. Detect Break of Structure (BOS)
+  // don't default to 0 / Infinity — no swing found means "unknown," not "trivially true"
   const lastCandle = candles[candles.length - 1];
-  const bullishBOS = lastCandle.close > (swingHigh || 0);
-  const bearishBOS = lastCandle.close < (swingLow || Infinity);
+  const bullishBOS = swingHigh !== null && lastCandle.close > swingHigh;
+  const bearishBOS = swingLow !== null && lastCandle.close < swingLow;
 
   // 3. Detect Fair Value Gaps (FVG) - 3 candle pattern
   let fvgAbove = null;
@@ -94,15 +97,30 @@ function analyzeMarketStructure(candles: any[]): MStructure {
   let orderBlockAbove = null;
   let orderBlockBelow = null;
   for (let i = candles.length - 10; i < candles.length - 2; i++) {
-    if (candles[i].close < candles[i].open && candles[i + 1].close > candles[i + 1].open) {
+    if (
+      candles[i].close < candles[i].open &&
+      candles[i + 1].close > candles[i + 1].open
+    ) {
       orderBlockBelow = candles[i].low;
     }
-    if (candles[i].close > candles[i].open && candles[i + 1].close < candles[i + 1].open) {
+    if (
+      candles[i].close > candles[i].open &&
+      candles[i + 1].close < candles[i + 1].open
+    ) {
       orderBlockAbove = candles[i].high;
     }
   }
 
-  return { swingHigh, swingLow, bullishBOS, bearishBOS, fvgAbove, fvgBelow, orderBlockAbove, orderBlockBelow };
+  return {
+    swingHigh,
+    swingLow,
+    bullishBOS,
+    bearishBOS,
+    fvgAbove,
+    fvgBelow,
+    orderBlockAbove,
+    orderBlockBelow,
+  };
 }
 
 /**
@@ -115,7 +133,12 @@ function analyzeMarketStructure(candles: any[]): MStructure {
  */
 function analyzeLiquidity(candles: any[]): LiquidityContext {
   if (candles.length < 15) {
-    return { equalHighs: null, equalLows: null, recentSweepHigh: false, recentSweepLow: false };
+    return {
+      equalHighs: null,
+      equalLows: null,
+      recentSweepHigh: false,
+      recentSweepLow: false,
+    };
   }
 
   const window = candles.slice(-30, -3); // exclude the very latest few candles — those are checked separately for the sweep itself
@@ -162,8 +185,16 @@ function analyzeLiquidity(candles: any[]): LiquidityContext {
  */
 function getHigherTimeframeInterval(interval: string): string {
   const map: Record<string, string> = {
-    "1m": "15m", "5m": "1h", "15m": "4h", "30m": "4h",
-    "1h": "4h", "2h": "1d", "4h": "1d", "1d": "1w", "1w": "1M", "1M": "1M",
+    "1m": "15m",
+    "5m": "1h",
+    "15m": "4h",
+    "30m": "4h",
+    "1h": "4h",
+    "2h": "1d",
+    "4h": "1d",
+    "1d": "1w",
+    "1w": "1M",
+    "1M": "1M",
   };
   return map[interval] ?? "4h";
 }
@@ -172,7 +203,9 @@ function getHigherTimeframeInterval(interval: string): string {
  * Rough session windows in UTC. Good enough for weighting setup
  * reliability — doesn't need to be exact to the minute.
  */
-function getSessionLabel(date: Date = new Date()): "ASIA" | "LONDON" | "NY_AM" | "NY_PM" | "OFF_SESSION" {
+function getSessionLabel(
+  date: Date = new Date(),
+): "ASIA" | "LONDON" | "NY_AM" | "NY_PM" | "OFF_SESSION" {
   const h = date.getUTCHours();
   if (h >= 0 && h < 7) return "ASIA";
   if (h >= 7 && h < 12) return "LONDON";
@@ -219,8 +252,16 @@ function buildInsightRoomKey(p: InsightSubscriptionParams): string {
 
 function getSwingLookback(interval: string): number {
   const map: Record<string, number> = {
-    "1m": 60, "5m": 60, "15m": 96, "30m": 96,
-    "1h": 48, "2h": 60, "4h": 60, "1d": 60, "1w": 52, "1M": 24,
+    "1m": 60,
+    "5m": 60,
+    "15m": 96,
+    "30m": 96,
+    "1h": 48,
+    "2h": 60,
+    "4h": 60,
+    "1d": 60,
+    "1w": 52,
+    "1M": 24,
   };
   return map[interval] ?? 50;
 }
@@ -230,12 +271,18 @@ function getSwingLookback(interval: string): number {
  * Failure here should never block the main insight — HTF context is a
  * confluence factor, not a hard dependency.
  */
-async function getHigherTimeframeContext(symbol: string, activeInterval: string): Promise<HigherTimeframeContext | null> {
+async function getHigherTimeframeContext(
+  symbol: string,
+  activeInterval: string,
+): Promise<HigherTimeframeContext | null> {
   const htfInterval = getHigherTimeframeInterval(activeInterval);
   if (htfInterval === activeInterval) return null;
 
   try {
-    const htfData = await MarketOrchestrator.getDynamicMarketData(symbol, htfInterval);
+    const htfData = await MarketOrchestrator.getDynamicMarketData(
+      symbol,
+      htfInterval,
+    );
     if (!htfData?.candles?.length) return null;
 
     const closes = htfData.candles.map((c) => c.close);
@@ -250,16 +297,24 @@ async function getHigherTimeframeContext(symbol: string, activeInterval: string)
 
     return { interval: htfInterval, price, sma, biasLabel };
   } catch (err: any) {
-    console.warn(`[Insight] HTF context fetch failed for ${symbol} (${htfInterval}):`, err?.message);
+    console.warn(
+      `[Insight] HTF context fetch failed for ${symbol} (${htfInterval}):`,
+      err?.message,
+    );
     return null;
   }
 }
 
 async function generateInsightPayload(params: InsightSubscriptionParams) {
   const { symbol, interval, riskPercent, riskRewardRatio } = params;
-  console.log(`[Insight] Starting generation for ${symbol} (${interval}, risk=${riskPercent}%, rr=${riskRewardRatio})`);
+  console.log(
+    `[Insight] Starting generation for ${symbol} (${interval}, risk=${riskPercent}%, rr=${riskRewardRatio})`,
+  );
 
-  const marketData = await MarketOrchestrator.getDynamicMarketData(symbol, interval);
+  const marketData = await MarketOrchestrator.getDynamicMarketData(
+    symbol,
+    interval,
+  );
   if (!marketData?.candles?.length) {
     throw new Error(`No candle data available for ${symbol}`);
   }
@@ -270,9 +325,14 @@ async function generateInsightPayload(params: InsightSubscriptionParams) {
   const atr = MarketMathService.calculateATR(marketData.candles);
   const adx = MarketMathService.calculateADX(marketData.candles);
   const vwap = MarketMathService.calculateVWAP(marketData.candles);
-  const bollingerBands = MarketMathService.calculateBollingerBands(marketData.candles);
+  const bollingerBands = MarketMathService.calculateBollingerBands(
+    marketData.candles,
+  );
   const swingLookback = getSwingLookback(interval);
-  const swingRange = MarketMathService.findRecentSwingRange(marketData.candles, swingLookback);
+  const swingRange = MarketMathService.findRecentSwingRange(
+    marketData.candles,
+    swingLookback,
+  );
 
   // ****** Market Structure Analysis ******
   const structure = analyzeMarketStructure(marketData.candles);
@@ -289,21 +349,31 @@ async function generateInsightPayload(params: InsightSubscriptionParams) {
   const shouldTriggerAI =
     (structure.bullishBOS && previousStructure?.bullishBOS === false) ||
     (structure.bearishBOS && previousStructure?.bearishBOS === false) ||
-    (structure.fvgAbove && structure.fvgAbove !== previousStructure?.fvgAbove) ||
-    (structure.fvgBelow && structure.fvgBelow !== previousStructure?.fvgBelow) ||
+    (structure.fvgAbove &&
+      structure.fvgAbove !== previousStructure?.fvgAbove) ||
+    (structure.fvgBelow &&
+      structure.fvgBelow !== previousStructure?.fvgBelow) ||
     liquidity.recentSweepHigh ||
     liquidity.recentSweepLow;
 
   if (!shouldTriggerAI) {
-    throw new Error(`No structural change detected for ${symbol}. Skipping AI generation.`);
+    throw new Error(
+      `No structural change detected for ${symbol}. Skipping AI generation.`,
+    );
   }
 
   let volume24hChangePct: number | null = null;
   if (marketData.candles.length >= 25) {
-    const recentVol = marketData.candles.slice(-24).reduce((s: number, c: any) => s + (c.volume || 0), 0);
-    const priorVol = marketData.candles.slice(-48, -24).reduce((s: number, c: any) => s + (c.volume || 0), 0);
+    const recentVol = marketData.candles
+      .slice(-24)
+      .reduce((s: number, c: any) => s + (c.volume || 0), 0);
+    const priorVol = marketData.candles
+      .slice(-48, -24)
+      .reduce((s: number, c: any) => s + (c.volume || 0), 0);
     if (priorVol > 0) {
-      volume24hChangePct = Number((((recentVol - priorVol) / priorVol) * 100).toFixed(2));
+      volume24hChangePct = Number(
+        (((recentVol - priorVol) / priorVol) * 100).toFixed(2),
+      );
     }
   }
 
@@ -356,7 +426,16 @@ async function generateInsightPayload(params: InsightSubscriptionParams) {
     symbol: marketData.symbol,
     interval,
     latestPrice: marketData.latestPrice,
-    indicators: { rsi, sma, atr, adx, vwap, bollingerBands, swingRange, structure },
+    indicators: {
+      rsi,
+      sma,
+      atr,
+      adx,
+      vwap,
+      bollingerBands,
+      swingRange,
+      structure,
+    },
     liquidity,
     higherTimeframe,
     sessionLabel,
@@ -366,7 +445,10 @@ async function generateInsightPayload(params: InsightSubscriptionParams) {
   };
 }
 
-function ensureInsightRoomActive(io: SocketIOServer, params: InsightSubscriptionParams) {
+function ensureInsightRoomActive(
+  io: SocketIOServer,
+  params: InsightSubscriptionParams,
+) {
   const key = buildInsightRoomKey(params);
   const existing = activeInsightRooms.get(key);
 
@@ -397,12 +479,20 @@ function ensureInsightRoomActive(io: SocketIOServer, params: InsightSubscription
     } catch (err: any) {
       if (!err.message.includes("No structural change")) {
         console.error(`[Insight Refresh Error] ${key}:`, err.message);
-        io.to(key).emit("insight_error", { symbol: params.symbol, message: err.message });
+        io.to(key).emit("insight_error", {
+          symbol: params.symbol,
+          message: err.message,
+        });
       }
     }
   }, INSIGHT_REFRESH_MS);
 
-  activeInsightRooms.set(key, { params, subscriberCount: 1, timer, lastGenerated: 0 });
+  activeInsightRooms.set(key, {
+    params,
+    subscriberCount: 1,
+    timer,
+    lastGenerated: 0,
+  });
 }
 
 function releaseInsightRoom(key: string) {
@@ -441,62 +531,123 @@ export function initSocketHandlers(io: SocketIOServer) {
 
     socket.on(
       "get_older_klines",
-      async ({ symbol, interval, beforeTime }: { symbol: string; interval: string; beforeTime: number }) => {
+      async ({
+        symbol,
+        interval,
+        beforeTime,
+      }: {
+        symbol: string;
+        interval: string;
+        beforeTime: number;
+      }) => {
         if (!symbol || !beforeTime) return;
         const formattedSymbol = symbol.toUpperCase().trim();
         const activeInterval = interval || "1h";
 
         try {
-          const older = await MarketService.getOlderHistoricalKlines(formattedSymbol, activeInterval, beforeTime, 200);
-          socket.emit("klines_older", { symbol: formattedSymbol, interval: activeInterval, candles: older });
+          const older = await MarketService.getOlderHistoricalKlines(
+            formattedSymbol,
+            activeInterval,
+            beforeTime,
+            200,
+          );
+          socket.emit("klines_older", {
+            symbol: formattedSymbol,
+            interval: activeInterval,
+            candles: older,
+          });
         } catch (err: any) {
-          console.error(`[WebSocket Error]: Failed to fetch older klines for ${formattedSymbol}`, err);
-          socket.emit("klines_older", { symbol: formattedSymbol, interval: activeInterval, candles: [] });
+          console.error(
+            `[WebSocket Error]: Failed to fetch older klines for ${formattedSymbol}`,
+            err,
+          );
+          socket.emit("klines_older", {
+            symbol: formattedSymbol,
+            interval: activeInterval,
+            candles: [],
+          });
         }
       },
     );
 
-    socket.on("subscribe_symbol", async (symbol: string, interval: string = "1h") => {
-      if (!symbol) return;
-      const formattedSymbol = symbol.toUpperCase().trim();
-      const roomName = `symbol:${formattedSymbol.replace("/", "")}`;
-      socket.join(roomName);
-      console.log(`[WebSocket]: Socket ${socket.id} subscribed to ${roomName}`);
-      try {
-        await MarketOrchestrator.getDynamicMarketData(formattedSymbol, interval);
-      } catch (err) {
-        console.error(`[WebSocket Error]: Failed to initialize tracking for ${formattedSymbol}`, err);
-      }
-    });
+    socket.on(
+      "subscribe_symbol",
+      async (symbol: string, interval: string = "1h") => {
+        if (!symbol) return;
+        const formattedSymbol = symbol.toUpperCase().trim();
+        const roomName = `symbol:${formattedSymbol.replace("/", "")}`;
+        socket.join(roomName);
+        console.log(
+          `[WebSocket]: Socket ${socket.id} subscribed to ${roomName}`,
+        );
+        try {
+          await MarketOrchestrator.getDynamicMarketData(
+            formattedSymbol,
+            interval,
+          );
+        } catch (err) {
+          console.error(
+            `[WebSocket Error]: Failed to initialize tracking for ${formattedSymbol}`,
+            err,
+          );
+        }
+      },
+    );
 
     socket.on("unsubscribe_symbol", (symbol: string) => {
       if (!symbol) return;
       const formattedSymbol = symbol.toUpperCase().trim();
       const roomName = `symbol:${formattedSymbol.replace("/", "")}`;
       socket.leave(roomName);
-      console.log(`[WebSocket]: Socket ${socket.id} unsubscribed from ${roomName}`);
-    });
-
-    socket.on("get_klines", async ({ symbol, interval }: { symbol: string; interval: string }) => {
-      if (!symbol) return;
-      const activeInterval = interval || "1h";
-      try {
-        console.log(`[WebSocket]: Fetching historical klines for ${symbol} (${activeInterval})`);
-        const klines = await MarketService.getHistoricalKlines(symbol, activeInterval, 200);
-        socket.emit("klines_history", klines);
-        MarketOrchestrator.getDynamicMarketData(symbol, activeInterval).catch(() => {});
-      } catch (err) {
-        console.error(`[WebSocket Error]: Failed to fetch klines for ${symbol}`, err);
-        socket.emit("klines_history", []);
-      }
+      console.log(
+        `[WebSocket]: Socket ${socket.id} unsubscribed from ${roomName}`,
+      );
     });
 
     socket.on(
+      "get_klines",
+      async ({ symbol, interval }: { symbol: string; interval: string }) => {
+        if (!symbol) return;
+        const activeInterval = interval || "1h";
+        try {
+          console.log(
+            `[WebSocket]: Fetching historical klines for ${symbol} (${activeInterval})`,
+          );
+          const klines = await MarketService.getHistoricalKlines(
+            symbol,
+            activeInterval,
+            200,
+          );
+          socket.emit("klines_history", klines);
+          MarketOrchestrator.getDynamicMarketData(symbol, activeInterval).catch(
+            () => {},
+          );
+        } catch (err) {
+          console.error(
+            `[WebSocket Error]: Failed to fetch klines for ${symbol}`,
+            err,
+          );
+          socket.emit("klines_history", []);
+        }
+      },
+    );
+
+    socket.on(
       "subscribe_insight",
-      async (raw: { symbol: string; interval: string; riskPercent?: number; riskRewardRatio?: number }) => {
-        console.log(`[WebSocket] Received subscribe_insight from ${socket.id}:`, raw);
+      async (raw: {
+        symbol: string;
+        interval: string;
+        riskPercent?: number;
+        riskRewardRatio?: number;
+      }) => {
+        console.log(
+          `[WebSocket] Received subscribe_insight from ${socket.id}:`,
+          raw,
+        );
         if (!raw?.symbol) {
-          console.warn(`[WebSocket] subscribe_insight rejected — no symbol in payload`);
+          console.warn(
+            `[WebSocket] subscribe_insight rejected — no symbol in payload`,
+          );
           return;
         }
 
@@ -515,18 +666,31 @@ export function initSocketHandlers(io: SocketIOServer) {
         try {
           const payload = await generateInsightPayload(params);
           lastEmittedTrade.set(key, payload.aiInsight.tradePosition);
-          console.log(`[WebSocket] Emitting insight_update to ${socket.id} for ${key}`);
+          console.log(
+            `[WebSocket] Emitting insight_update to ${socket.id} for ${key}`,
+          );
           socket.emit("insight_update", payload);
         } catch (err: any) {
-          console.error(`[WebSocket Error]: Failed to generate insight for ${key}`, err);
-          socket.emit("insight_error", { symbol: params.symbol, message: err.message });
+          console.error(
+            `[WebSocket Error]: Failed to generate insight for ${key}`,
+            err,
+          );
+          socket.emit("insight_error", {
+            symbol: params.symbol,
+            message: err.message,
+          });
         }
       },
     );
 
     socket.on(
       "unsubscribe_insight",
-      (raw: { symbol: string; interval: string; riskPercent?: number; riskRewardRatio?: number }) => {
+      (raw: {
+        symbol: string;
+        interval: string;
+        riskPercent?: number;
+        riskRewardRatio?: number;
+      }) => {
         if (!raw?.symbol) return;
         const params: InsightSubscriptionParams = {
           symbol: raw.symbol.toUpperCase().trim(),
